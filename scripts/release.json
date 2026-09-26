@@ -1,0 +1,4 @@
+{
+  "comment": "Where released .xpi files are downloaded from (GitHub release assets).",
+  "downloadURL": "https://github.com/4-Dimethylamino-78-dihydroxyflavone/zsync/releases/download/v{version}/{file}"
+}

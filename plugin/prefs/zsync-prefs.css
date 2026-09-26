@@ -1,0 +1,47 @@
+.zsync-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-block: 6px;
+}
+
+.zsync-project {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--fill-quinary, rgba(0, 0, 0, 0.1));
+  border-radius: 5px;
+}
+
+.zsync-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.zsync-path {
+  font-family: monospace;
+  overflow-wrap: anywhere;
+}
+
+.zsync-status {
+  font-size: 0.9em;
+  color: var(--fill-secondary, #666);
+}
+
+.zsync-status.ok {
+  color: var(--accent-green, #2e7d32);
+}
+
+.zsync-status.warn {
+  color: var(--accent-orange, #b26a00);
+}
+
+.zsync-status.error {
+  color: var(--accent-red, #c62828);
+}
+
+.zsync-help {
+  color: var(--fill-secondary, #666);
+  margin-block: 4px;
+}

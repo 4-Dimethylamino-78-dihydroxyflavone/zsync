@@ -1,0 +1,14 @@
+{
+  "manifest_version": 2,
+  "name": "zsync dev bridge (TEST PROFILE ONLY)",
+  "version": "0.1.0",
+  "description": "Runs posted JavaScript inside an isolated test instance of Zotero. Never install this in a real profile.",
+  "applications": {
+    "zotero": {
+      "id": "zsync-devbridge@test.invalid",
+      "update_url": "https://127.0.0.1/none.json",
+      "strict_min_version": "9.0",
+      "strict_max_version": "10.0.*"
+    }
+  }
+}

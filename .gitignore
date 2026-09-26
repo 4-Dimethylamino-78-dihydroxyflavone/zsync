@@ -1,0 +1,6 @@
+.zt/
+dist/*.xpi
+node_modules/
+*.log
+test/fixtures/out/
+*.zip

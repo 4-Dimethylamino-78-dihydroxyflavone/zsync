@@ -1,0 +1,24 @@
+<vbox id="zsync-prefpane-root"
+	onload="Zotero_Preferences.getScope('zsync-prefpane').ZsyncPrefs.init()"
+	onunload="Zotero_Preferences.getScope('zsync-prefpane')?.ZsyncPrefs.uninit()"
+>
+	<linkset>
+		<html:link rel="localization" href="zsync.ftl"/>
+	</linkset>
+
+	<groupbox aria-labelledby="zsync-prefs-projects-title">
+		<label><html:h2 id="zsync-prefs-projects-title" data-l10n-id="zsync-prefs-projects-title"/></label>
+		<html:p class="zsync-help" data-l10n-id="zsync-prefs-projects-intro"/>
+		<html:div id="zsync-projects" class="zsync-projects"/>
+		<hbox class="zsync-buttons">
+			<button id="zsync-add" data-l10n-id="zsync-prefs-add"/>
+			<button id="zsync-export-all" data-l10n-id="zsync-prefs-export-all"/>
+		</hbox>
+	</groupbox>
+
+	<groupbox aria-labelledby="zsync-prefs-auto-title">
+		<label><html:h2 id="zsync-prefs-auto-title" data-l10n-id="zsync-prefs-auto-title"/></label>
+		<checkbox id="zsync-auto" preference="extensions.zsync.autoExport" data-l10n-id="zsync-prefs-auto"/>
+		<html:p class="zsync-help" data-l10n-id="zsync-prefs-auto-help"/>
+	</groupbox>
+</vbox>

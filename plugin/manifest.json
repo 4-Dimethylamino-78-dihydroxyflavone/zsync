@@ -1,0 +1,19 @@
+{
+  "manifest_version": 2,
+  "name": "zsync",
+  "version": "0.1.0",
+  "description": "Export a Zotero collection's items, highlights and comments to a Typst project folder.",
+  "icons": {
+    "48": "icon.svg",
+    "96": "icon.svg"
+  },
+  "applications": {
+    "zotero": {
+      "id": "zsync@4-dimethylamino-78-dihydroxyflavone.github.io",
+      "update_url": "https://raw.githubusercontent.com/4-Dimethylamino-78-dihydroxyflavone/zsync/main/updates.json",
+      "strict_min_version": "9.0",
+      "strict_max_version": "10.*"
+    }
+  },
+  "homepage_url": "https://github.com/4-Dimethylamino-78-dihydroxyflavone/zsync"
+}
