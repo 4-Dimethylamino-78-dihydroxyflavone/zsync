@@ -3,9 +3,9 @@
     "zsync@4-dimethylamino-78-dihydroxyflavone.github.io": {
       "updates": [
         {
-          "version": "0.1.0",
-          "update_link": "https://github.com/4-Dimethylamino-78-dihydroxyflavone/zsync/releases/download/v0.1.0/zsync-0.1.0.xpi",
-          "update_hash": "sha256:d90833c72ece56eb7e4a34e4bc1a28264146e5b7b947593a942e42a6355e15f0",
+          "version": "0.2.0",
+          "update_link": "https://github.com/4-Dimethylamino-78-dihydroxyflavone/zsync/releases/download/v0.2.0/zsync-0.2.0.xpi",
+          "update_hash": "sha256:1ae99be93e9b68798d1eb9d0e84af695b3024b95cd9884532aacdb547c8ab094",
           "applications": {
             "zotero": {
               "strict_min_version": "9.0",
