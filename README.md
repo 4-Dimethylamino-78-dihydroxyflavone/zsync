@@ -41,11 +41,20 @@ Export All zsync Projects** exports every linked folder. A small window reports
 how many files changed and any warnings (for example a PDF that is not on
 this device).
 
-**Export automatically.** In **Settings → zsync**, tick *Export a project a few
-seconds after anything in its collection changes*. A new highlight, an edited
-comment, an item added to or removed from the collection, or a change synced
-from your phone is exported about five seconds later (after the sync
-finishes). This setting is per device.
+**Automatic export** is on unless you switch it off (**Settings → zsync**,
+*Keep project folders up to date automatically*; per device). A new
+highlight, an edited comment, an item added to or removed from the
+collection, a change synced from your phone (once the sync finishes), or an
+edit to the project's `zsync.json` is exported moments later, so `typst
+watch` or a live preview picks it up by itself. Settings shows when each
+folder was last updated automatically. If an automatic export fails (a typo
+in `zsync.json`, a folder on a drive that is not connected), a small window
+says so once, and zsync tries again later.
+
+Automatic exports reuse the last bibliography while no item in the
+collection has changed, which keeps highlighting and commenting cheap. An
+export you start yourself always makes the bibliography afresh: do one after
+changing Better BibTeX's settings.
 
 **Another device.** The project folder carries its `zsync.json`, so on another
 computer open **Settings → zsync → Add Existing Project Folder…** and pick the

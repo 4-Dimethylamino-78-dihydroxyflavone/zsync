@@ -117,6 +117,8 @@ async function start() {
     "browser.shell.checkDefaultBrowser": false,
     "extensions.zsyncdev.enabled": true,
     "extensions.zsyncdev.token": token,
+    // on by default for people; the tests that need it switch it on
+    "extensions.zsync.autoExport": false,
   };
   const userJs = Object.entries(prefs)
     .map(([k, v]) => `user_pref(${JSON.stringify(k)}, ${JSON.stringify(v)});`).join("\n") + "\n";

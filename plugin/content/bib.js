@@ -35,10 +35,43 @@ Zsync.bib = (() => {
     let hit = all.find((t) => t.translatorID.toLowerCase() === w)
       || all.find((t) => String(t.label).toLowerCase() === w);
     if (hit && BBT_TRANSLATORS.has(hit.translatorID) && !Zotero.BetterBibTeX) hit = null;
-    if (hit) return { translatorID: hit.translatorID, label: hit.label, target: hit.target, fallback: false };
+    if (hit) return { translatorID: hit.translatorID, label: hit.label, target: hit.target, lastUpdated: hit.lastUpdated, fallback: false };
     const builtin = all.find((t) => t.translatorID === BUILTIN_BIBLATEX);
     if (!builtin) throw new Error(`export translator "${wanted}" not found, and no built-in BibLaTeX`);
-    return { translatorID: builtin.translatorID, label: builtin.label, target: builtin.target, fallback: true };
+    return { translatorID: builtin.translatorID, label: builtin.label, target: builtin.target, lastUpdated: builtin.lastUpdated, fallback: true };
+  }
+
+  // The last few translator outputs, by what they were made from. An
+  // automatic export whose items have not changed since reuses one instead
+  // of running the translator again: Better BibTeX can take seconds on a big
+  // collection, and queues behind its own auto-exports. Its settings are not
+  // visible from here, so an export a person asks for always runs the
+  // translator, as does the first one after Zotero starts.
+  const recent = new Map();
+  const RECENT_MAX = 8;
+
+  // What the items' entries are made from, as far as zsync can see: each
+  // item's whole data (toJSON: fields, creators, tags, relations; not just
+  // dateModified, which only counts whole seconds), its citation key (Better
+  // BibTeX may keep it outside the item) and its attachments' files (the
+  // file field). In the given order: translators keep it. Hashed, so a
+  // remembered key stays small.
+  function madeFrom(items, translator) {
+    const parts = items.map((it) => JSON.stringify([
+      it.toJSON(),
+      Zsync.collect.citationKeyOf(it),
+      it.getAttachments(false).map((id) => {
+        const a = Zotero.Items.get(id);
+        return a ? [id, a.attachmentPath, !!a.deleted] : [id];
+      }),
+    ]));
+    return Zsync.util.sha256Text([translator.translatorID, translator.lastUpdated || "", Zotero.version, ...parts].join("\n"));
+  }
+
+  function keep(key, result) {
+    recent.delete(key);
+    recent.set(key, result);
+    while (recent.size > RECENT_MAX) recent.delete(recent.keys().next().value);
   }
 
   // Better BibTeX starts after Zotero; its ready promise never rejects, so
@@ -51,12 +84,21 @@ Zsync.bib = (() => {
     }
   }
 
-  async function exportItems(items, wanted) {
+  // reuse: true lets an automatic export take the text of an earlier run
+  // made from the same items (the result then has reused: true).
+  async function exportItems(items, wanted, { reuse = false } = {}) {
     await Zotero.Schema.schemaUpdatePromise;
     await betterBibTeXReady();
-    const { translatorID, label, target, fallback } = await findTranslator(wanted);
+    const translator = await findTranslator(wanted);
+    const { translatorID, label, target, fallback } = translator;
     // An empty export set makes Better BibTeX throw; an empty bib is right.
-    if (!items.length) return { text: "", label, target, fallback };
+    if (!items.length) return { text: "", label, target, fallback, reused: false };
+    const key = madeFrom(items, translator);
+    if (reuse && recent.has(key)) {
+      const hit = recent.get(key);
+      keep(key, hit);
+      return { ...hit, reused: true };
+    }
     const tr = new Zotero.Translate.Export();
     // setItems empties the array it is given, so hand it a copy; pass the
     // translator's ID, not the cached translator object (Better BibTeX
@@ -72,7 +114,9 @@ Zsync.bib = (() => {
     if (!text && (error || ok === false)) {
       throw error instanceof Error ? error : new Error(`${label} export failed${error ? `: ${error}` : ""}`);
     }
-    return { text, label, target, fallback };
+    const result = { text, label, target, fallback };
+    keep(key, result);
+    return { ...result, reused: false };
   }
 
   // Entries for standalone documents (see standalone.js), in the style of the

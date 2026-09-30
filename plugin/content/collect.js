@@ -77,8 +77,11 @@ Zsync.collect = (() => {
   // collections, not in the trash, each once.
   async function topLevelItems(collections) {
     const seen = new Map();
+    // Zotero.X.loadDataTypes only queries what is not in memory yet, which
+    // after waitForDataLoad (see resolveCollection) is nothing; loadDataType
+    // and loadAllData would query the database again every time.
+    await Zotero.Collections.loadDataTypes(collections, ["childItems"]);
     for (const c of collections) {
-      await c.loadDataType("childItems");
       for (const item of c.getChildItems(false, false)) {
         if (item.deleted || seen.has(item.id)) continue;
         if (item.isRegularItem() || item.isFileAttachment()) seen.set(item.id, item);
@@ -99,6 +102,23 @@ Zsync.collect = (() => {
   function parsePosition(json) {
     try { return JSON.parse(json || "null"); }
     catch (e) { return null; }
+  }
+
+  // Which message of its thread each email highlight is in, kept while the
+  // snapshot file and the highlight stay the same, so that an export does
+  // not read and parse every saved thread again.
+  // path -> { stamp: "<size>:<mtime>", found: Map(position + text -> message) }
+  const threads = new Map();
+
+  async function threadCache(path) {
+    const st = await IOUtils.stat(path).catch(() => null);
+    const stamp = st ? `${st.size}:${st.lastModified}` : null;
+    let entry = threads.get(path);
+    if (!entry || entry.stamp !== stamp) {
+      entry = { stamp, found: new Map() };
+      threads.set(path, entry);
+    }
+    return entry.found;
   }
 
   async function readSnapshot(path, charset) {
@@ -139,7 +159,7 @@ Zsync.collect = (() => {
     const usedCitekeys = new Map();
     const trackedIDs = [];      // attachment and annotation item IDs
 
-    for (const top of tops) await top.loadAllData();
+    await Zotero.Items.loadDataTypes(tops);
     const regular = tops.filter((i) => i.isRegularItem());
     const standalone = tops.filter((i) => !i.isRegularItem());
 
@@ -166,8 +186,7 @@ Zsync.collect = (() => {
     // owner: the entry in `items` this attachment belongs to, as
     // { key: its Zotero key, citekey: its key in items }, or null
     const addAttachment = async (att, owner) => {
-      await att.loadAllData();
-      await att.loadDataType("childItems");
+      await Zotero.Items.loadDataTypes([att]);
       trackedIDs.push(att.id);
       const citekey = owner ? owner.citekey : null;
       const reader = att.attachmentReaderType || null;
@@ -188,7 +207,8 @@ Zsync.collect = (() => {
         warnings.push(`the file of attachment ${att.key} ("${rec.title || rec.filename}") is not on this device`);
       }
 
-      let snapshot;  // parsed lazily, once
+      let snapshot;  // parsed lazily, once, and only for highlights not seen before
+      const found = reader === "snapshot" && path ? await threadCache(path) : null;
       const anns = reader ? att.getAnnotations(false) : [];
       anns.sort((a, b) => String(a.annotationSortIndex).localeCompare(String(b.annotationSortIndex)) || a.key.localeCompare(b.key));
       for (const a of anns) {
@@ -219,17 +239,26 @@ Zsync.collect = (() => {
           "link": `zotero://open/${libPath}/items/${att.key}?annotation=${a.key}`,
           "message": null,
         };
-        if (reader === "snapshot" && path && (type === "highlight" || type === "underline")) {
-          if (snapshot === undefined) {
-            try {
-              snapshot = await readSnapshot(path, att.attachmentCharset);
+        if (found && (type === "highlight" || type === "underline")) {
+          const seen = `${a.annotationPosition}\n${a.annotationText}`;
+          if (found.has(seen)) {
+            annRec.message = found.get(seen);
+          }
+          else {
+            if (snapshot === undefined) {
+              try {
+                snapshot = await readSnapshot(path, att.attachmentCharset);
+              }
+              catch (e) {
+                snapshot = null;
+                warnings.push(`could not read snapshot ${att.key}: ${e.message}`);
+              }
             }
-            catch (e) {
-              snapshot = null;
-              warnings.push(`could not read snapshot ${att.key}: ${e.message}`);
+            if (snapshot) {
+              annRec.message = snapshot.message(position, a.annotationText);
+              found.set(seen, annRec.message);
             }
           }
-          if (snapshot) annRec.message = snapshot.message(position, a.annotationText);
         }
         if (type === "image" || type === "ink") imageAnnotations.push({ annotation: a, attachment: att, record: annRec });
         annotations[a.key] = annRec;
@@ -358,6 +387,7 @@ Zsync.collect = (() => {
     // What auto-export watches: every object this export read.
     const index = {
       libraryID,
+      recursive: !!cfg.recursive,
       collectionIDs: collections.map((c) => c.id),
       ids: [...tops.map((i) => i.id), ...trackedIDs],
       keys: [...tops.map((i) => i.key), ...Object.keys(attachments), ...Object.keys(annotations)],
@@ -365,5 +395,5 @@ Zsync.collect = (() => {
     return { collection, data, regularItems, standaloneItems, files, imageAnnotations, warnings, index };
   }
 
-  return { libraryIDFor, librarySpecFor, libraryPath, resolveCollection, coveredCollections, build };
+  return { libraryIDFor, librarySpecFor, libraryPath, resolveCollection, coveredCollections, citationKeyOf, build };
 })();

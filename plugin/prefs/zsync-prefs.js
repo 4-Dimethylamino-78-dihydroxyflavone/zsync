@@ -39,7 +39,7 @@ var ZsyncPrefs = {
     if (last.error) return { cls: "error", text: api.t("zsync-prefs-status-error", { message: last.error }) };
     const c = last.report.counts || {};
     const when = new Date(last.at).toLocaleString();
-    let text = api.t("zsync-prefs-status-ok", { when, items: c.items || 0, annotations: c.annotations || 0 });
+    let text = api.t(last.auto ? "zsync-prefs-status-auto" : "zsync-prefs-status-ok", { when, items: c.items || 0, annotations: c.annotations || 0 });
     if (last.report.warnings.length) text += ` · ⚠ ${last.report.warnings.length}`;
     return { cls: last.report.warnings.length ? "warn" : "ok", text, title: last.report.warnings.join("\n") };
   },

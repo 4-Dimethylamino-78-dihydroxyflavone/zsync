@@ -1,7 +1,8 @@
-/* global Zsync, Zotero, setTimeout, clearTimeout */
+/* global Zsync, Zotero, IOUtils, PathUtils, setTimeout, clearTimeout */
 // Auto-export: watch Zotero for changes to anything a project exported, and
-// re-export that project a few seconds after the last change. Off unless the
-// extensions.zsync.autoExport preference is on (per device).
+// each project's zsync.json for edits, and re-export that project shortly
+// after the last change. On unless the extensions.zsync.autoExport
+// preference is off (per device).
 var Zsync = globalThis.Zsync || {};
 globalThis.Zsync = Zsync;
 
@@ -12,51 +13,159 @@ Zsync.auto = (() => {
   // Item events that can change an export. 'refresh' and 'index' come from
   // full-text indexing; an erased annotation is caught by its 'delete'.
   const ITEM_EVENTS = new Set(["add", "modify", "delete", "trash"]);
-  // While Zotero syncs, changes arrive in many small batches; wait for the
-  // sync to finish, but never longer than this.
+  // Changes a sync brings down arrive in many small batches; wait for the
+  // sync to finish (looking again every SYNC_RECHECK), but never longer than
+  // MAX_SYNC_WAIT. Changes made here do not wait: they are complete when
+  // Zotero announces them, and Zotero starts a sync to upload them 3 s
+  // later, which would otherwise hold up their export.
   const MAX_SYNC_WAIT = 120000;
+  const SYNC_RECHECK = 2000;
+  // Every POLL_MS, one stat of each project's zsync.json, off the main
+  // thread: an edit re-exports the project, and a folder that comes back (a
+  // drive plugged in again) is exported and watched again.
+  const POLL_MS = 2000;
+  // An automatic export that failed is tried again after RETRY_FIRST, then
+  // twice as long each time, up to RETRY_MAX.
+  const RETRY_FIRST = 30000;
+  const RETRY_MAX = 30 * 60000;
 
   let observerID = null;
   let prefObserver = null;
   let running = false;
+  let pollTimer = null;
+  let polls = 0;              // which run of the poller is the current one
   const timers = new Map();   // root -> timeout
   const since = new Map();    // root -> when its first pending change arrived
-  const watched = new Map();  // root -> { libraryID, collectionIDs:Set, ids:Set, keys:Set }
-  const last = new Map();     // root -> { at, report | error }
+  const remote = new Set();   // roots with a pending change that a sync brought down
+  const watched = new Map();  // root -> { libraryID, recursive, collectionIDs:Set, ids:Set, keys:Set }
+  const last = new Map();     // root -> { at, report | error, auto }
+  const took = new Map();     // root -> how long its last export took (ms)
+  const stamps = new Map();   // root -> "<size>:<mtime>" of its zsync.json, "" while it is missing
+  const retries = new Map();  // root -> { at, wait } after a failed automatic export
 
   function enabled() {
     return !!Zotero.Prefs.get(PREF_ON, true);
   }
 
-  function delay() {
+  function baseDelay() {
     const ms = Number(Zotero.Prefs.get(PREF_DELAY, true));
-    return Number.isFinite(ms) && ms >= 500 ? ms : 5000;
+    return Number.isFinite(ms) && ms >= 250 ? ms : 1500;
+  }
+
+  // How long to wait, after the latest change to a project, before exporting
+  // it. Every newer change starts the wait again, so the export runs once
+  // things have been quiet for this long.
+  //   base      the extensions.zsync.debounceMs preference (1500 unless changed)
+  //   lastMs    how long this project's previous export took, or null before its first
+  //   waitedMs  how long ago the first change that is not exported yet arrived
+  // All in milliseconds. Return the delay: 0 exports right away.
+  //
+  // Returning `base` alone never exports while changes keep coming (a
+  // comment being typed saves every second or so), however long that goes
+  // on. Things to weigh: an upper bound on waitedMs, so a long burst still
+  // shows up in Typst; and lastMs, so a project whose export is slow is
+  // exported less often than one that takes a few milliseconds.
+  function exportDelay({ base, lastMs, waitedMs }) {
+    // TODO: the policy
+    return base;
+  }
+
+  function delayFor(root) {
+    const now = Date.now();
+    let ms = NaN;
+    try {
+      const lastMs = lookup(took, root);
+      ms = Number(exportDelay({ base: baseDelay(), lastMs: lastMs === undefined ? null : lastMs, waitedMs: now - (since.get(root) || now) }));
+    }
+    catch (e) {
+      Zotero.logError(e);
+    }
+    // whatever the policy says, exports keep happening
+    return Number.isFinite(ms) ? Math.min(Math.max(ms, 0), 60000) : baseDelay();
+  }
+
+  // ---- per-folder bookkeeping, under whichever spelling of the path
+  function lookup(map, root) {
+    if (map.has(root)) return map.get(root);
+    for (const [k, v] of map) if (Zsync.config.sameFolder(k, root)) return v;
+    return undefined;
+  }
+
+  function setIn(map, root, value) {
+    for (const k of [...map.keys()]) if (k !== root && Zsync.config.sameFolder(k, root)) map.delete(k);
+    map.set(root, value);
+  }
+
+  function dropIn(map, root) {
+    for (const k of [...map.keys()]) if (Zsync.config.sameFolder(k, root)) map.delete(k);
+  }
+
+  function registered(root) {
+    return Zsync.config.roots().some((r) => Zsync.config.sameFolder(r, root));
   }
 
   // Called after every export (manual or automatic) with its report. Only
   // folders in this device's project list are watched.
-  function remember(root, report) {
-    const registered = Zsync.config.roots().some((r) => Zsync.config.sameFolder(r, root));
-    if (report && report.index && registered) {
+  function remember(root, report, { auto = false } = {}) {
+    if (report && report.index && registered(root)) {
       const i = report.index;
-      watched.set(root, {
+      setIn(watched, root, {
         libraryID: i.libraryID,
+        recursive: !!i.recursive,
         collectionIDs: new Set(i.collectionIDs),
         ids: new Set(i.ids),
         keys: new Set(i.keys),
       });
+      dropIn(retries, root);
     }
-    last.set(root, { at: new Date().toISOString(), report, error: null });
+    if (report && Number.isFinite(report.ms)) setIn(took, root, report.ms);
+    setIn(last, root, { at: new Date().toISOString(), report, error: null, auto });
   }
 
-  function failed(root, error) {
-    last.set(root, { at: new Date().toISOString(), report: null, error: String((error && error.message) || error) });
+  // auto: the export was automatic, so nobody saw it fail: say so, once per
+  // new problem (not on every retry). quiet: record it without saying so.
+  function failed(root, error, { auto = false, quiet = false } = {}) {
+    const message = String((error && error.message) || error);
+    const before = lookup(last, root);
+    setIn(last, root, { at: new Date().toISOString(), report: null, error: message, auto });
+    if (auto && !quiet && running && !(before && before.error === message)) {
+      try { Zsync.ui.notifyAutoFailure(root, message); }
+      catch (e) { Zotero.logError(e); }
+    }
+  }
+
+  function retryLater(root) {
+    const r = lookup(retries, root);
+    const wait = r ? Math.min(r.wait * 2, RETRY_MAX) : RETRY_FIRST;
+    setIn(retries, root, { at: Date.now() + wait, wait });
+  }
+
+  // Is this collection one the project exports, or (recursive) inside one?
+  function covers(w, collectionID) {
+    if (w.collectionIDs.has(collectionID)) return true;
+    if (!w.recursive) return false;
+    // a subcollection made or moved in since the last export
+    let c = Zotero.Collections.get(collectionID);
+    for (let n = 0; c && c.parentID && n < 64; n++) {
+      if (w.collectionIDs.has(c.parentID)) return true;
+      c = Zotero.Collections.get(c.parentID);
+    }
+    return false;
+  }
+
+  // Notes (and images inside notes) are not exported, and a note being
+  // written saves every few seconds: none of that is a change to a project.
+  function inNote(item) {
+    for (let it = item, n = 0; it && n < 4; it = it.parentID ? Zotero.Items.get(it.parentID) : null, n++) {
+      if (it.isNote()) return true;
+    }
+    return false;
   }
 
   // Does this notifier event touch what the project exported?
   function touches(w, event, type, ids, extraData) {
     if (type === "collection-item") {
-      return ids.some((id) => w.collectionIDs.has(Number(String(id).split("-")[0])));
+      return ids.some((id) => covers(w, Number(String(id).split("-")[0])));
     }
     if (type === "item-tag") {
       return ids.some((id) => w.ids.has(Number(String(id).split("-")[0])));
@@ -65,15 +174,19 @@ Zsync.auto = (() => {
       return ids.some((id) => {
         if (w.collectionIDs.has(Number(id))) return true;
         const c = Zotero.Collections.get(Number(id));
-        return !!(c && c.parentID && w.collectionIDs.has(c.parentID));
+        return !!(c && c.parentID && w.recursive && covers(w, c.parentID));
       });
     }
     if (type !== "item" || !ITEM_EVENTS.has(event)) return false;
     for (const id of ids) {
       const x = extraData && extraData[id];
       if (event === "modify") {
-        // opening or closing a PDF saves its last-read time: nothing changed
-        if (x && x.changed && typeof x.changed === "object" && !Object.keys(x.changed).length) continue;
+        // Saving an item always says what changed (Zotero 9 and 10). Nothing
+        // in it: opening or closing a PDF saved its last-read time. No
+        // `changed` at all: a parent told that a child was added or moved
+        // (the child has its own event, which for a note is all there is),
+        // or a bulk change such as moving to the trash (a 'trash' follows).
+        if (!(x && x.changed && typeof x.changed === "object" && Object.keys(x.changed).length)) continue;
         // Zotero announcing a PNG that zsync itself just rendered
         if (Zsync.exporter.wasRendered(Number(id))) continue;
       }
@@ -82,12 +195,17 @@ Zsync.auto = (() => {
         if (x && x.libraryID === w.libraryID && w.keys.has(x.key)) return true;
         continue;
       }
-      // something new: an annotation on a watched attachment, an attachment
-      // on a watched item, or an item placed in a watched collection
-      const item = Zotero.Items.get(Number(id));
-      if (!item || item.libraryID !== w.libraryID) continue;
-      if (item.parentID && w.ids.has(item.parentID)) return true;
-      if (!item.parentID && item.getCollections().some((c) => w.collectionIDs.has(c))) return true;
+      // Something new under something the project exported, or placed in a
+      // collection it covers. Walk up, so that an annotation on an attachment
+      // added since the last export counts too.
+      let item = Zotero.Items.get(Number(id));
+      if (!item || item.libraryID !== w.libraryID || inNote(item)) continue;
+      for (let n = 0; item.parentID && n < 4; n++) {
+        if (w.ids.has(item.parentID)) return true;
+        item = Zotero.Items.get(item.parentID);
+        if (!item) break;
+      }
+      if (item && !item.parentID && item.getCollections().some((c) => covers(w, c))) return true;
     }
     return false;
   }
@@ -97,26 +215,56 @@ Zsync.auto = (() => {
     catch (e) { return false; }
   }
 
-  function schedule(root, ms = delay()) {
-    clearTimeout(timers.get(root));
+  // ---- scheduling
+  // fromSync: the change was written by a sync (Zotero marks those events
+  // skipAutoSync), so more of the same sync may still be on its way.
+  function schedule(root, { fromSync = false } = {}) {
     if (!since.has(root)) since.set(root, Date.now());
-    timers.set(root, setTimeout(() => {
-      timers.delete(root);
-      if (!running) return;
-      if (syncing() && Date.now() - since.get(root) < MAX_SYNC_WAIT) {
-        schedule(root);
-        return;
-      }
-      since.delete(root);
-      exportNow(root);
-    }, ms));
+    if (fromSync) remote.add(root);
+    fireIn(root, delayFor(root));
+  }
+
+  function fireIn(root, ms) {
+    clearTimeout(timers.get(root));
+    timers.set(root, setTimeout(() => fire(root), ms));
+  }
+
+  function fire(root) {
+    timers.delete(root);
+    if (!running) return;
+    if (remote.has(root) && syncing() && Date.now() - (since.get(root) || 0) < MAX_SYNC_WAIT) {
+      fireIn(root, SYNC_RECHECK);
+      return;
+    }
+    since.delete(root);
+    remote.delete(root);
+    // unlinked meanwhile
+    if (!registered(root)) return;
+    exportNow(root);
   }
 
   function exportNow(root) {
     return Zsync.exporter.run(root, { priority: false }).then(
-      (report) => { remember(root, report); return report; },
-      (e) => { failed(root, e); Zsync.util.log(`auto-export of ${root} failed: ${e.message || e}`); },
+      (report) => { remember(root, report, { auto: true }); return report; },
+      async (e) => {
+        let error = e;
+        const missing = !(await IOUtils.exists(root).catch(() => false));
+        if (missing) error = new Error(`the project folder ${root} is missing (renamed, moved, or on a drive that is not connected?); Settings → zsync can find it`);
+        failed(root, error, { auto: true });
+        retryLater(root);
+        Zsync.util.log(`auto-export of ${root} failed: ${(e && e.message) || e}`);
+      },
     );
+  }
+
+  // A sync just ended: export what it changed without further delay, and
+  // try again the projects that are not watched (it may have brought their
+  // collection or group library).
+  function syncFinished() {
+    for (const root of [...timers.keys()]) fireIn(root, 1000);
+    for (const root of Zsync.config.roots()) {
+      if (lookup(watched, root) === undefined && lookup(stamps, root)) schedule(root);
+    }
   }
 
   const observer = {
@@ -124,12 +272,12 @@ Zsync.auto = (() => {
       if (!running) return;
       try {
         if (type === "sync") {
-          // a sync just ended: export what it changed without further delay
-          if (event === "finish") for (const root of timers.keys()) schedule(root, 1000);
+          if (event === "finish") syncFinished();
           return;
         }
+        const fromSync = !!(extraData && extraData.skipAutoSync);
         for (const [root, w] of watched) {
-          if (touches(w, event, type, ids, extraData)) schedule(root);
+          if (touches(w, event, type, ids, extraData)) schedule(root, { fromSync });
         }
       }
       catch (e) {
@@ -138,16 +286,63 @@ Zsync.auto = (() => {
     },
   };
 
+  // ---- zsync.json of every project, and retries
+  async function pollOnce() {
+    const roots = Zsync.config.roots();
+    const seen = await Promise.all(roots.map((root) => IOUtils.stat(PathUtils.join(root, Zsync.config.FILE))
+      .then((st) => `${st.size}:${st.lastModified}`, () => "")));
+    if (!running) return;
+    const now = Date.now();
+    roots.forEach((root, i) => {
+      const stamp = seen[i];
+      const before = stamps.get(root);
+      stamps.set(root, stamp);
+      // the first look only takes note: startup exports every project anyway
+      if (before === undefined || !stamp) return;
+      if (stamp !== before) {
+        // edited, or back after being away
+        dropIn(retries, root);
+        schedule(root);
+        return;
+      }
+      const r = lookup(retries, root);
+      if (r && now >= r.at && !timers.has(root)) {
+        r.at = Infinity;  // until this attempt's result sets the next one
+        schedule(root);
+      }
+    });
+    for (const k of [...stamps.keys()]) if (!roots.includes(k)) stamps.delete(k);
+  }
+
+  function startPolling() {
+    const run = ++polls;
+    const tick = async () => {
+      if (run !== polls || !running) return;
+      try { await pollOnce(); }
+      catch (e) { Zotero.logError(e); }
+      if (run === polls && running) pollTimer = setTimeout(tick, POLL_MS);
+    };
+    tick();
+  }
+
+  function stopPolling() {
+    polls++;
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+
   // Export every project once, which also records what each one watches.
   async function primeAll() {
     for (const p of await Zsync.config.projects()) {
       if (!running) return;
       if (!p.cfg) {
-        failed(p.root, p.error);
+        // a folder on a drive that is not connected is not news at startup;
+        // the poller exports it when it comes back
+        failed(p.root, p.error, { auto: true, quiet: p.missing });
         continue;
       }
       // unlinked while this was running
-      if (!Zsync.config.roots().some((r) => Zsync.config.sameFolder(r, p.root))) continue;
+      if (!registered(p.root)) continue;
       await exportNow(p.root);
     }
   }
@@ -156,6 +351,7 @@ Zsync.auto = (() => {
     if (running) return;
     running = true;
     observerID = Zotero.Notifier.registerObserver(observer, TYPES, "zsync");
+    startPolling();
     // Catch up with changes made while Zotero was closed (or synced from
     // another device) once the UI is up, without holding up startup.
     Promise.resolve(Zotero.uiReadyPromise).then(primeAll).catch((e) => Zotero.logError(e));
@@ -166,9 +362,13 @@ Zsync.auto = (() => {
     running = false;
     if (observerID) Zotero.Notifier.unregisterObserver(observerID);
     observerID = null;
+    stopPolling();
     for (const t of timers.values()) clearTimeout(t);
     timers.clear();
     since.clear();
+    remote.clear();
+    stamps.clear();
+    retries.clear();
     Zsync.util.log("auto-export off");
   }
 
@@ -186,16 +386,24 @@ Zsync.auto = (() => {
 
   // A project folder was removed from the list
   function forget(root) {
-    clearTimeout(timers.get(root));
-    timers.delete(root);
-    since.delete(root);
-    for (const k of [...watched.keys()]) if (Zsync.config.sameFolder(k, root)) watched.delete(k);
+    for (const k of [...timers.keys()]) {
+      if (Zsync.config.sameFolder(k, root)) {
+        clearTimeout(timers.get(k));
+        timers.delete(k);
+        since.delete(k);
+        remote.delete(k);
+      }
+    }
+    for (const map of [watched, stamps, retries, took]) dropIn(map, root);
   }
 
   // Drop the remembered result of the last export (for the Settings pane).
   function forgetResult(root) {
-    for (const k of [...last.keys()]) if (Zsync.config.sameFolder(k, root)) last.delete(k);
+    dropIn(last, root);
   }
 
-  return { startup, shutdown, remember, failed, forget, forgetResult, touches, last, watched, enabled, isRunning: () => running };
+  return {
+    startup, shutdown, remember, failed, forget, forgetResult, touches, exportDelay, last, watched, enabled,
+    isRunning: () => running,
+  };
 })();
