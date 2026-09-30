@@ -28,6 +28,8 @@ Zsync.auto = (() => {
   // twice as long each time, up to RETRY_MAX.
   const RETRY_FIRST = 30000;
   const RETRY_MAX = 30 * 60000;
+  // How long an erased object is looked for in later exports' output
+  const ERASED_KEEP = 60000;
 
   let observerID = null;
   let prefObserver = null;
@@ -42,6 +44,8 @@ Zsync.auto = (() => {
   const took = new Map();     // root -> how long its last export took (ms)
   const stamps = new Map();   // root -> "<size>:<mtime>" of its zsync.json, "" while it is missing
   const retries = new Map();  // root -> { at, wait } after a failed automatic export
+  const notified = new Map(); // root -> true once its failure was shown, until it exports again
+  const erased = new Map();   // "<libraryID>/<key>" -> when it was erased (lately)
 
   function enabled() {
     return !!Zotero.Prefs.get(PREF_ON, true);
@@ -115,23 +119,62 @@ Zsync.auto = (() => {
         collectionIDs: new Set(i.collectionIDs),
         ids: new Set(i.ids),
         keys: new Set(i.keys),
+        paths: new Map(i.paths || []),
       });
       dropIn(retries, root);
+      // it read something that has been erased since: export once more
+      if (running && readErased(i)) schedule(root);
     }
     if (report && Number.isFinite(report.ms)) setIn(took, root, report.ms);
     setIn(last, root, { at: new Date().toISOString(), report, error: null, auto });
+    dropIn(notified, root);
   }
 
-  // auto: the export was automatic, so nobody saw it fail: say so, once per
-  // new problem (not on every retry). quiet: record it without saying so.
+  // auto: the export was automatic, so nobody saw it fail: say so once,
+  // until the project exports again (not on every retry, nor on every
+  // autosave of a zsync.json being edited). quiet: record it, say nothing.
   function failed(root, error, { auto = false, quiet = false } = {}) {
     const message = String((error && error.message) || error);
-    const before = lookup(last, root);
     setIn(last, root, { at: new Date().toISOString(), report: null, error: message, auto });
-    if (auto && !quiet && running && !(before && before.error === message)) {
-      try { Zsync.ui.notifyAutoFailure(root, message); }
+    if (auto && !quiet && running && !lookup(notified, root)) {
+      let shown = false;
+      try { shown = !!Zsync.ui.notifyAutoFailure(root, message); }
       catch (e) { Zotero.logError(e); }
+      // with no Zotero window open, it is said when a later attempt fails
+      if (shown) setIn(notified, root, true);
     }
+  }
+
+  // An object erased while an export that had already read it was running
+  // stays in that export's output, and the watch set it replaces did not
+  // know the object yet. Remember erasures for a minute, and look for them
+  // in each new watch set.
+  function noteErased(ids, extraData) {
+    const now = Date.now();
+    for (const id of ids) {
+      const x = extraData[id];
+      if (x && x.key) erased.set(`${x.libraryID}/${x.key}`, now);
+    }
+  }
+
+  function readErased(index) {
+    if (!erased.size) return false;
+    const now = Date.now();
+    const keys = new Set(index.keys);
+    let hit = false;
+    for (const [k, at] of erased) {
+      if (now - at > ERASED_KEEP) {
+        erased.delete(k);
+        continue;
+      }
+      const slash = k.indexOf("/");
+      if (Number(k.slice(0, slash)) === index.libraryID && keys.has(k.slice(slash + 1))) {
+        // once: the next export cannot read it again
+        erased.delete(k);
+        hit = true;
+      }
+    }
+    return hit;
   }
 
   function retryLater(root) {
@@ -151,6 +194,14 @@ Zsync.auto = (() => {
       c = Zotero.Collections.get(c.parentID);
     }
     return false;
+  }
+
+  // Is the file of an exported attachment not the one exported any more
+  // (renamed, or relinked with Locate…)?
+  function fileMoved(w, id) {
+    if (!w.paths || !w.paths.has(id)) return false;
+    const att = Zotero.Items.get(id);
+    return !!att && (att.attachmentPath || null) !== w.paths.get(id);
   }
 
   // Notes (and images inside notes) are not exported, and a note being
@@ -181,12 +232,13 @@ Zsync.auto = (() => {
     for (const id of ids) {
       const x = extraData && extraData[id];
       if (event === "modify") {
-        // Saving an item always says what changed (Zotero 9 and 10). Nothing
-        // in it: opening or closing a PDF saved its last-read time. No
-        // `changed` at all: a parent told that a child was added or moved
-        // (the child has its own event, which for a note is all there is),
-        // or a bulk change such as moving to the trash (a 'trash' follows).
-        if (!(x && x.changed && typeof x.changed === "object" && Object.keys(x.changed).length)) continue;
+        // An empty `changed`: opening or closing a PDF saved its last-read
+        // time. A file renamed or relinked is saved the same way, so look
+        // at the attachment's path. Anything else counts, also without
+        // `changed`: pages deleted in the reader move later annotations and
+        // say only 'modify', and a parent told that a child was added may
+        // carry its own edit, merged into the same notification.
+        if (x && x.changed && typeof x.changed === "object" && !Object.keys(x.changed).length && !fileMoved(w, Number(id))) continue;
         // Zotero announcing a PNG that zsync itself just rendered
         if (Zsync.exporter.wasRendered(Number(id))) continue;
       }
@@ -279,6 +331,7 @@ Zsync.auto = (() => {
         for (const [root, w] of watched) {
           if (touches(w, event, type, ids, extraData)) schedule(root, { fromSync });
         }
+        if (type === "item" && event === "delete" && extraData) noteErased(ids, extraData);
       }
       catch (e) {
         Zotero.logError(e);
@@ -369,6 +422,8 @@ Zsync.auto = (() => {
     remote.clear();
     stamps.clear();
     retries.clear();
+    notified.clear();
+    erased.clear();
     Zsync.util.log("auto-export off");
   }
 
@@ -394,7 +449,7 @@ Zsync.auto = (() => {
         remote.delete(k);
       }
     }
-    for (const map of [watched, stamps, retries, took]) dropIn(map, root);
+    for (const map of [watched, stamps, retries, took, notified]) dropIn(map, root);
   }
 
   // Drop the remembered result of the last export (for the Settings pane).

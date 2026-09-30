@@ -46,10 +46,14 @@ this device).
 highlight, an edited comment, an item added to or removed from the
 collection, a change synced from your phone (once the sync finishes), or an
 edit to the project's `zsync.json` is exported moments later, so `typst
-watch` or a live preview picks it up by itself. Settings shows when each
-folder was last updated automatically. If an automatic export fails (a typo
-in `zsync.json`, a folder on a drive that is not connected), a small window
+watch` or a live preview picks it up by itself. What you change on this
+device does not wait for Zotero's sync. Settings shows when each folder was
+last updated automatically. If an automatic export fails (a typo in
+`zsync.json`, a folder on a drive that is not connected), a small window
 says so once, and zsync tries again later.
+
+Updating from zsync 0.1.0 switches automatic export on, also on a device
+where you had switched it off; switch it off again there if you want.
 
 Automatic exports reuse the last bibliography while no item in the
 collection has changed, which keeps highlighting and commenting cheap. An

@@ -35,10 +35,13 @@ Zsync.bib = (() => {
     let hit = all.find((t) => t.translatorID.toLowerCase() === w)
       || all.find((t) => String(t.label).toLowerCase() === w);
     if (hit && BBT_TRANSLATORS.has(hit.translatorID) && !Zotero.BetterBibTeX) hit = null;
-    if (hit) return { translatorID: hit.translatorID, label: hit.label, target: hit.target, lastUpdated: hit.lastUpdated, fallback: false };
+    // exportNotes: whether it writes child notes into entries (by default)
+    const found = (t, fallback) => ({ translatorID: t.translatorID, label: t.label, target: t.target, lastUpdated: t.lastUpdated,
+      exportNotes: !!(t.displayOptions && t.displayOptions.exportNotes), fallback });
+    if (hit) return found(hit, false);
     const builtin = all.find((t) => t.translatorID === BUILTIN_BIBLATEX);
     if (!builtin) throw new Error(`export translator "${wanted}" not found, and no built-in BibLaTeX`);
-    return { translatorID: builtin.translatorID, label: builtin.label, target: builtin.target, lastUpdated: builtin.lastUpdated, fallback: true };
+    return found(builtin, true);
   }
 
   // The last few translator outputs, by what they were made from. An
@@ -53,24 +56,37 @@ Zsync.bib = (() => {
   // What the items' entries are made from, as far as zsync can see: each
   // item's whole data (toJSON: fields, creators, tags, relations; not just
   // dateModified, which only counts whole seconds), its citation key (Better
-  // BibTeX may keep it outside the item) and its attachments' files (the
-  // file field). In the given order: translators keep it. Hashed, so a
-  // remembered key stays small.
+  // BibTeX may keep it outside the item), its attachments (the file field)
+  // and, for a translator that writes them, its child notes. In the given
+  // order: translators keep it. Hashed, so a remembered key stays small.
+  // null when something is not at hand: then the translator runs.
   function madeFrom(items, translator) {
-    const parts = items.map((it) => JSON.stringify([
-      it.toJSON(),
-      Zsync.collect.citationKeyOf(it),
-      it.getAttachments(false).map((id) => {
-        const a = Zotero.Items.get(id);
-        return a ? [id, a.attachmentPath, !!a.deleted] : [id];
-      }),
-    ]));
-    return Zsync.util.sha256Text([translator.translatorID, translator.lastUpdated || "", Zotero.version, ...parts].join("\n"));
+    try {
+      const parts = items.map((it) => JSON.stringify([
+        it.toJSON(),
+        Zsync.collect.citationKeyOf(it),
+        it.getAttachments(false).map((id) => {
+          const a = Zotero.Items.get(id);
+          return a ? [id, a.attachmentPath, a.getField("title"), a.attachmentContentType, a.attachmentLinkMode, !!a.deleted] : [id];
+        }),
+        translator.exportNotes
+          ? it.getNotes(false).map((id) => {
+            const n = Zotero.Items.get(id);
+            return n ? [id, n.getNote(), !!n.deleted] : [id];
+          })
+          : null,
+      ]));
+      return Zsync.util.sha256Text([translator.translatorID, translator.lastUpdated || "", Zotero.version, ...parts].join("\n"));
+    }
+    catch (e) {
+      Zsync.util.log(`bibliography not reusable: ${e.message}`);
+      return null;
+    }
   }
 
-  function keep(key, result) {
+  function keep(key, text) {
     recent.delete(key);
-    recent.set(key, result);
+    recent.set(key, text);
     while (recent.size > RECENT_MAX) recent.delete(recent.keys().next().value);
   }
 
@@ -94,10 +110,12 @@ Zsync.bib = (() => {
     // An empty export set makes Better BibTeX throw; an empty bib is right.
     if (!items.length) return { text: "", label, target, fallback, reused: false };
     const key = madeFrom(items, translator);
-    if (reuse && recent.has(key)) {
-      const hit = recent.get(key);
-      keep(key, hit);
-      return { ...hit, reused: true };
+    if (reuse && key && recent.has(key)) {
+      const text = recent.get(key);
+      keep(key, text);
+      // only the text is remembered: which translator was found, and
+      // whether that was a fallback, is this lookup's
+      return { text, label, target, fallback, reused: true };
     }
     const tr = new Zotero.Translate.Export();
     // setItems empties the array it is given, so hand it a copy; pass the
@@ -114,9 +132,11 @@ Zsync.bib = (() => {
     if (!text && (error || ok === false)) {
       throw error instanceof Error ? error : new Error(`${label} export failed${error ? `: ${error}` : ""}`);
     }
-    const result = { text, label, target, fallback };
-    keep(key, result);
-    return { ...result, reused: false };
+    // The translator may have read a newer state of the items than the key
+    // describes (Better BibTeX can queue for seconds): keep the text only
+    // when nothing changed meanwhile.
+    if (key && madeFrom(items, translator) === key) keep(key, text);
+    return { text, label, target, fallback, reused: false };
   }
 
   // Entries for standalone documents (see standalone.js), in the style of the

@@ -321,14 +321,16 @@ Zsync.ui = (() => {
 
   // An automatic export failed, so nobody saw it happen: say so in a corner
   // window that closes by itself. Settings → zsync keeps the message.
+  // Returns whether there was a Zotero window to say it in.
   function notifyAutoFailure(root, message) {
     const win = Zotero.getMainWindow();
-    if (!win) return;
+    if (!win) return false;
     const pw = new Zotero.ProgressWindow({ window: win, closeOnClick: true });
     pw.changeHeadline(t("zsync-auto-failed", { name: nameOf(root) }));
     pw.addDescription(message);
     pw.show();
     pw.startCloseTimer(15000);
+    return true;
   }
 
   function summary(report) {

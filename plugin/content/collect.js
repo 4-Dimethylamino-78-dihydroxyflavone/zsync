@@ -391,6 +391,8 @@ Zsync.collect = (() => {
       collectionIDs: collections.map((c) => c.id),
       ids: [...tops.map((i) => i.id), ...trackedIDs],
       keys: [...tops.map((i) => i.key), ...Object.keys(attachments), ...Object.keys(annotations)],
+      // each attachment's stored path: a rename or relink says nothing else
+      paths: files.map((f) => [f.attachment.id, f.attachment.attachmentPath || null]),
     };
     return { collection, data, regularItems, standaloneItems, files, imageAnnotations, warnings, index };
   }

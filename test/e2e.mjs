@@ -420,10 +420,13 @@ test("auto-export follows edits, additions, deletions and membership, not unrela
       await wait(2500);
       o.unrelatedIgnored = lastAt() === at;
       await other.eraseTx();
-      // notes are not exported, and one being written saves every few seconds
-      at = lastAt();
+      // notes are not exported, and one being written saves every few
+      // seconds (a new one tells its parent, which may export once)
       const note = new Zotero.Item("note"); note.parentID = byKey(${js(seeded.made[0].key)}).id; note.setNote("<p>e2e note</p>"); await note.saveTx();
+      await wait(2500);
+      at = lastAt();
       note.setNote("<p>e2e note, edited</p>"); await note.saveTx();
+      note.setNote("<p>e2e note, edited again</p>"); await note.saveTx();
       await wait(2500);
       o.noteIgnored = lastAt() === at;
       await note.eraseTx();
@@ -502,8 +505,14 @@ test("auto-export follows zsync.json edits, reports mistakes, and picks a folder
     fs.writeFileSync(path.join(root, "zsync.json"), "{ not json");
     const bad = await waitFor(async () => { const r = await lastResult(root); return r && /not valid JSON/.test(r.error || "") && r; }, "the error");
     assert.equal(bad.auto, true);
+    const fixedAt = Date.now();
     config({});
-    await waitFor(() => !readJSON(ann).items.sub2026only, "the fixed zsync.json");
+    // the whole export, not just annotations.json: its manifest comes after,
+    // and Windows cannot rename a folder zsync is still writing into
+    await waitFor(async () => {
+      const r = await lastResult(root);
+      return r && !r.error && Date.parse(r.at) >= fixedAt && !readJSON(ann).items.sub2026only;
+    }, "the fixed zsync.json");
     // the folder goes away (a drive unplugged) and comes back
     const away = `${root}-away`;
     fs.rmSync(away, { recursive: true, force: true });
@@ -529,7 +538,8 @@ test("automatic exports reuse the bibliography unless an item changed", async ()
     const r = await lastResult(root);
     return r && r.auto && r.report && Date.parse(r.at) >= t && r;
   }, "an automatic export");
-  const saved = await autoOn([root]);
+  // long enough that the two title saves below (600 ms apart) make one export
+  const saved = await autoOn([root], 1500);
   try {
     await doneAfter(0);
     // an annotation changed: exported, without running the translator
@@ -591,7 +601,35 @@ test("a change made here is exported during a sync; one a sync brought down wait
   }
 });
 
-const zlink =(root) => z(`await Zotero.Zsync.link(coll, ${js(root)}); const r = await Zotero.Zsync.exportProject(${js(root)}); delete r.index; return r;`);
+test("auto-export follows changes Zotero announces without details: pages deleted, a file renamed", async () => {
+  const root = fresh("auto-bare", { zsync: 1, collection: COLL });
+  const ann = path.join(root, "refs", "annotations.json");
+  const attKey = seeded.made[1].attachment.key;
+  const exportedAfter = (t, what) => waitFor(async () => {
+    const r = await lastResult(root);
+    return r && r.auto && !r.error && Date.parse(r.at) >= t && r;
+  }, what);
+  const saved = await autoOn([root]);
+  let name = null;
+  try {
+    await exportedAfter(0, "the first export");
+    name = readJSON(ann).attachments[attKey].filename;
+    // Zotero.PDFWorker.deletePages moves later annotations in SQL, then says only this
+    let t = Date.now();
+    await z(`await Zotero.Notifier.trigger("modify", "item", [byKey("HLNRMAAA").id], {}); return true;`);
+    await exportedAfter(t, "an export after 'modify' without details");
+    // renaming the file saves the attachment with nothing in `changed`
+    const renamed = `renamed-${Date.now()}.pdf`;
+    await z(`const r = await byKey(${js(attKey)}).renameAttachmentFile(${js(renamed)}); if (r !== true) throw new Error("rename: " + r); return true;`);
+    await waitFor(() => readJSON(ann).attachments[attKey].filename === renamed, "the new file name");
+  }
+  finally {
+    if (name) await z(`await byKey(${js(attKey)}).renameAttachmentFile(${js(name)}); return true;`);
+    await autoOff(saved, [root]);
+  }
+});
+
+const zlink = (root) =>z(`await Zotero.Zsync.link(coll, ${js(root)}); const r = await Zotero.Zsync.exportProject(${js(root)}); delete r.index; return r;`);
 const zroots = () => z(`return Zotero.Zsync.roots();`);
 const has = (list, p) => list.some((r) => r.toLowerCase() === p.toLowerCase());
 
