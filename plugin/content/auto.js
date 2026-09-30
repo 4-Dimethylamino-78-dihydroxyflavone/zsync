@@ -30,6 +30,8 @@ Zsync.auto = (() => {
   const RETRY_MAX = 30 * 60000;
   // How long an erased object is looked for in later exports' output
   const ERASED_KEEP = 60000;
+  // The longest an export waits for changes to stop (see exportDelay)
+  const MAX_WAIT = 20000;
 
   let observerID = null;
   let prefObserver = null;
@@ -64,14 +66,14 @@ Zsync.auto = (() => {
   //   waitedMs  how long ago the first change that is not exported yet arrived
   // All in milliseconds. Return the delay: 0 exports right away.
   //
-  // Returning `base` alone never exports while changes keep coming (a
-  // comment being typed saves every second or so), however long that goes
-  // on. Things to weigh: an upper bound on waitedMs, so a long burst still
-  // shows up in Typst; and lastMs, so a project whose export is slow is
-  // exported less often than one that takes a few milliseconds.
-  function exportDelay({ base, lastMs, waitedMs }) {
-    // TODO: the policy
-    return base;
+  // Quiet for `base`, as long as that does not put the export more than
+  // MAX_WAIT after the first change it has to catch up with: a long burst
+  // (highlighting one passage after another, or a comment typed on and on,
+  // which Zotero saves at least every 10 s) still reaches Typst every
+  // 20 seconds. Like ZotLit's freshness notifier, with more breathing room
+  // than its 10 s. lastMs is not used.
+  function exportDelay({ base, waitedMs }) {
+    return Math.max(0, Math.min(base, MAX_WAIT - waitedMs));
   }
 
   function delayFor(root) {

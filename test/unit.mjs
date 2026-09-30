@@ -446,6 +446,8 @@ async function autoRunning() {
       debug() {}, logError(e) { throw e; },
     },
   });
+  // a clock the test can set (the real one until it does)
+  vm.runInContext("{ const real = Date.now; Date.now = () => (globalThis.fakeNow ?? real()); }", fake);
   for (const f of ["util", "auto"]) {
     vm.runInContext(fs.readFileSync(path.join(REPO, "plugin", "content", `${f}.js`), "utf8"), fake, { filename: `${f}.js` });
   }
@@ -455,8 +457,30 @@ async function autoRunning() {
   // let the first look at zsync.json settle (it only takes note)
   for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
   const start = timers.length;
-  return { auto: fake.Zsync.auto, notify: (...a) => observer.notify(...a), scheduled: () => timers.length - start };
+  return {
+    auto: fake.Zsync.auto,
+    notify: (...a) => observer.notify(...a),
+    scheduled: () => timers.length - start,
+    lastDelay: () => timers[timers.length - 1].ms,
+    setNow: (ms) => { fake.fakeNow = ms; },
+  };
 }
+
+test("changes that keep coming are exported at most 20 s after the first", async () => {
+  const { auto, notify, lastDelay, setNow } = await autoRunning();
+  auto.remember("R", { index: { libraryID: 1, recursive: false, collectionIDs: [10], ids: [1], keys: ["AAAAAAAA"], paths: [] }, ms: 5 });
+  // a comment on exported annotation 1, saved again and again
+  const save = (at) => {
+    setNow(at);
+    notify("modify", "item", [1], { 1: { changed: { annotationComment: "before" } } });
+    return lastDelay();
+  };
+  assert.equal(save(1000000), 1500, "the first save");
+  assert.equal(save(1012000), 1500);
+  assert.equal(save(1019000), 1000, "ends at 20 s after the first save");
+  assert.equal(save(1021000), 0, "overdue: at once");
+  auto.shutdown();
+});
 
 test("something erased while an export was reading it is exported again, once", async () => {
   const { auto, notify, scheduled } = await autoRunning();
@@ -474,6 +498,17 @@ test("something erased while an export was reading it is exported again, once", 
   auto.remember("R", { index: index(["AAAAAAAA"]), ms: 5 });
   assert.equal(scheduled(), 1);
   auto.shutdown();
+});
+
+test("an export waits for things to be quiet, but never more than 20 s after the first change", () => {
+  const auto = autoWith();
+  const d = (base, waitedMs) => auto.exportDelay({ base, lastMs: 40, waitedMs });
+  assert.equal(d(1500, 0), 1500, "the first change");
+  assert.equal(d(1500, 12000), 1500, "changes still coming, well inside the cap");
+  assert.equal(d(1500, 19000), 1000, "the wait shrinks to end at 20 s");
+  assert.equal(d(1500, 20000), 0);
+  assert.equal(d(1500, 600000), 0, "long overdue: at once");
+  assert.equal(d(30000, 0), 20000, "a debounce longer than the cap is capped");
 });
 
 test("the export delay policy always gives a usable delay", () => {

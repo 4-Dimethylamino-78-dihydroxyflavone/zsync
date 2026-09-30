@@ -46,8 +46,10 @@ this device).
 highlight, an edited comment, an item added to or removed from the
 collection, a change synced from your phone (once the sync finishes), or an
 edit to the project's `zsync.json` is exported moments later, so `typst
-watch` or a live preview picks it up by itself. What you change on this
-device does not wait for Zotero's sync. Settings shows when each folder was
+watch` or a live preview picks it up by itself: 1.5 seconds after things
+go quiet, and at least every 20 seconds while changes keep coming (one
+highlight after another, a long comment). What you change on this device
+does not wait for Zotero's sync. Settings shows when each folder was
 last updated automatically. If an automatic export fails (a typo in
 `zsync.json`, a folder on a drive that is not connected), a small window
 says so once, and zsync tries again later.
