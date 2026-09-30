@@ -14,9 +14,39 @@ globalThis.Zsync = Zsync;
 Zsync.exporter = (() => {
   const U = Zsync.util;
 
-  // Per-session cache of source file hashes, keyed by path, invalidated by
-  // size or modification time.
-  const hashCache = new Map();
+  // Source file hashes, keyed by path, invalidated by size or modification
+  // time. Kept on this device between sessions (like the PDF text cache in
+  // standalone.js), so the first export after Zotero starts does not read
+  // every copied PDF again.
+  const HASH_CACHE_MAX = 20000;
+  let hashCache = null;
+  let hashCacheDirty = false;
+
+  function hashCacheFile() {
+    return PathUtils.join(Zotero.Profile.dir, "zsync-hashes.json");
+  }
+
+  async function loadHashCache() {
+    if (hashCache) return hashCache;
+    const cache = new Map();
+    try {
+      const c = JSON.parse(await IOUtils.readUTF8(hashCacheFile()));
+      if (c && c.version === 1 && Array.isArray(c.entries)) for (const [p, v] of c.entries) cache.set(p, v);
+    }
+    catch (e) {}
+    // another export may have loaded it meanwhile
+    if (!hashCache) hashCache = cache;
+    return hashCache;
+  }
+
+  async function saveHashCache() {
+    if (!hashCache || !hashCacheDirty) return;
+    hashCacheDirty = false;
+    // newest last; the oldest go once there are too many
+    const entries = [...hashCache].slice(-HASH_CACHE_MAX);
+    try { await IOUtils.writeUTF8(hashCacheFile(), JSON.stringify({ version: 1, entries }), { tmpPath: hashCacheFile() + ".tmp" }); }
+    catch (e) { U.log(`could not save the hash cache: ${e.message}`); }
+  }
 
   // Zotero announces every PNG it renders with an item 'modify' event;
   // auto-export ignores those for annotations zsync asked it to render.
@@ -32,10 +62,13 @@ Zsync.exporter = (() => {
   }
 
   async function sourceHash(path, stat) {
-    const hit = hashCache.get(path);
+    const cache = await loadHashCache();
+    const hit = cache.get(path);
     if (hit && hit.size === stat.size && hit.mtime === stat.lastModified) return hit.sha256;
     const sha256 = await U.sha256File(path);
-    hashCache.set(path, { size: stat.size, mtime: stat.lastModified, sha256 });
+    cache.delete(path);
+    cache.set(path, { size: stat.size, mtime: stat.lastModified, sha256 });
+    hashCacheDirty = true;
     return sha256;
   }
 
@@ -234,14 +267,15 @@ Zsync.exporter = (() => {
     }
   }
 
-  async function exportBib(cfg, model, prev, report) {
+  async function exportBib(cfg, model, prev, report, reuse) {
     if (!cfg.paths.bib) {
       if (model.standaloneItems.length) {
         report.warnings.push(`"bib" is null, so the ${model.standaloneItems.length} standalone documents have no bibliography entries (point "bib" at a file, or set "standalone": "attachments")`);
       }
       return null;
     }
-    const { text, label, target, fallback } = await Zsync.bib.exportItems(model.regularItems, cfg.bibTranslator);
+    const { text, label, target, fallback, reused } = await Zsync.bib.exportItems(model.regularItems, cfg.bibTranslator, { reuse });
+    report.bibReused = reused;
     if (fallback) report.warnings.push(`export translator "${cfg.bibTranslator}" is not installed; used Zotero's built-in "${label}"`);
     let full = text.replace(/\s+$/, "");
     if (model.standaloneItems.length) {
@@ -288,11 +322,13 @@ Zsync.exporter = (() => {
     if (await U.writeTextIfChanged(cfg.paths.manifest, text)) report.changed.push(rel);
   }
 
+  // priority: true for an export a person asked for; false for an automatic
+  // one, which may reuse the last bibliography (see bib.js).
   async function exportProject(root, { priority = true } = {}) {
     const t0 = Date.now();
     const cfg = await Zsync.config.read(root);
     if (!cfg) throw new Error(`no ${Zsync.config.FILE} in ${root}`);
-    const report = { root, name: null, changed: [], removed: [], warnings: [], counts: null, ms: 0 };
+    const report = { root, name: null, changed: [], removed: [], warnings: [], counts: null, bibReused: false, ms: 0 };
 
     const prevFound = await findManifest(root, cfg);
     const prev = prevFound ? prevFound.m : null;
@@ -308,9 +344,10 @@ Zsync.exporter = (() => {
     const stamp = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
     try {
       await exportSources(cfg, model, prev, report, sources);
+      await saveHashCache();
       await exportImages(cfg, model, prev, report, priority, images);
       try {
-        bib = await exportBib(cfg, model, prev, report);
+        bib = await exportBib(cfg, model, prev, report, !priority);
       }
       catch (e) {
         report.warnings.push(`bibliography not exported: ${e.message}`);
@@ -509,22 +546,29 @@ Zsync.exporter = (() => {
   }
 
   // priority: true for exports a person asked for (their PNG renders jump
-  // Zotero's PDF queue), false for automatic ones.
+  // Zotero's PDF queue, and the bibliography is made afresh), false for
+  // automatic ones.
   function run(root, { priority = true } = {}) {
     const key = Zotero.isWin ? PathUtils.normalize(root).toLowerCase() : PathUtils.normalize(root);
-    if (pending.has(key)) return pending.get(key);
-    const p = chain.then(() => {
+    const waiting = pending.get(key);
+    if (waiting) {
+      // a person's request joining an automatic export that has not started
+      if (priority) waiting.opts.priority = true;
+      return waiting.promise;
+    }
+    const opts = { priority };
+    const promise = chain.then(() => {
       pending.delete(key);
-      return exportProject(root, { priority });
+      return exportProject(root, opts);
     });
-    pending.set(key, p);
-    chain = p.catch(() => {});
-    return p;
+    pending.set(key, { promise, opts });
+    chain = promise.catch(() => {});
+    return promise;
   }
 
   function idle() {
     return chain;
   }
 
-  return { run, idle, queue, exportProject, removeOutputs, removeIfUnchanged, wasRendered, ownKey, _hashCache: hashCache };
+  return { run, idle, queue, exportProject, removeOutputs, removeIfUnchanged, wasRendered, ownKey };
 })();

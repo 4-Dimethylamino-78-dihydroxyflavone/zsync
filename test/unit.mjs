@@ -373,10 +373,160 @@ test("keys for titles in other scripts and special letters", () => {
   assert.equal(keys.get("CYRLLLLL"), "docCYRLLLLL2026");
 });
 
+// ---- auto-export, against a fake Zotero
+
+function autoWith({ items = {}, collections = {} } = {}) {
+  const fake = vm.createContext({
+    TextEncoder, console,
+    Zotero: { Items: { get: (id) => items[id] || false }, Collections: { get: (id) => collections[id] || false } },
+  });
+  for (const f of ["util", "auto"]) {
+    vm.runInContext(fs.readFileSync(path.join(REPO, "plugin", "content", `${f}.js`), "utf8"), fake, { filename: `${f}.js` });
+  }
+  // 99 is a PNG zsync itself just had rendered
+  fake.Zsync.exporter = { wasRendered: (id) => id === 99 };
+  return fake.Zsync.auto;
+}
+
+const fakeItem = (id, { parentID = null, note = false, collections = [], attachmentPath } = {}) =>
+  ({ id, libraryID: 1, parentID, attachmentPath, isNote: () => note, getCollections: () => collections });
+
+test("auto-export notices changes under what a project exported, and ignores the rest", () => {
+  // collection 10 is the project's, 11 was made inside it since, 12 is elsewhere.
+  // Item 1 (in 10) and its attachment 2 were exported; attachment 3 was added
+  // to 1 since, and 4 is an annotation on it; 5 is a note on 1, 6 an image in it.
+  const items = {
+    1: fakeItem(1, { collections: [10] }), 2: fakeItem(2, { parentID: 1, attachmentPath: "storage:a.pdf" }), 3: fakeItem(3, { parentID: 1 }),
+    4: fakeItem(4, { parentID: 3 }), 5: fakeItem(5, { parentID: 1, note: true }), 6: fakeItem(6, { parentID: 5 }),
+    7: fakeItem(7, { collections: [11] }), 8: fakeItem(8, { collections: [12] }), 99: fakeItem(99, { parentID: 2 }),
+  };
+  const collections = { 10: { id: 10, parentID: null }, 11: { id: 11, parentID: 10 }, 12: { id: 12, parentID: null } };
+  const auto = autoWith({ items, collections });
+  const w = (recursive) => ({ libraryID: 1, recursive, collectionIDs: new Set([10]), ids: new Set([1, 2]), keys: new Set(["AAAAAAAA", "BBBBBBBB"]),
+    paths: new Map([[2, "storage:a.pdf"]]) });
+  const t = (recursive, event, type, ids, extra) => auto.touches(w(recursive), event, type, ids, extra);
+  // what an item's own save says (the previous values of what changed)
+  const saved = (...ids) => Object.fromEntries(ids.map((id) => [id, { changed: { annotationComment: "before" } }]));
+  assert.ok(t(false, "modify", "item", [2], saved(2)), "an exported object");
+  assert.ok(t(false, "modify", "item", [1], { 1: {} }), "a parent told that a child was added (it may carry its own edit)");
+  assert.ok(t(false, "modify", "item", [2], {}) && t(false, "modify", "item", [2]), "a change announced without details (pages deleted)");
+  assert.ok(t(false, "add", "item", [4]), "an annotation on an attachment added since the last export");
+  assert.ok(!t(false, "add", "item", [5]) && !t(false, "modify", "item", [5], saved(5)), "a note");
+  assert.ok(!t(false, "modify", "item", [6], saved(6)), "an image in a note");
+  assert.ok(t(true, "add", "item", [7]) && !t(false, "add", "item", [7]), "an item in a new subcollection, when recursive");
+  assert.ok(t(true, "add", "collection-item", ["11-7"]) && !t(false, "add", "collection-item", ["11-7"]));
+  assert.ok(t(false, "add", "collection-item", ["10-8"]), "added to the collection");
+  assert.ok(t(true, "add", "collection", [11]) && !t(false, "add", "collection", [11]), "a new subcollection, when recursive");
+  assert.ok(t(false, "modify", "collection", [10]), "the collection renamed");
+  assert.ok(!t(true, "add", "item", [8]) && !t(true, "add", "collection-item", ["12-8"]), "elsewhere");
+  assert.ok(t(false, "delete", "item", [42], { 42: { libraryID: 1, key: "BBBBBBBB" } }), "an exported object erased");
+  assert.ok(!t(false, "delete", "item", [43], { 43: { libraryID: 1, key: "CCCCCCCC" } }));
+  assert.ok(!t(false, "modify", "item", [2], { 2: { changed: {} } }), "a save that changed nothing");
+  assert.ok(!t(false, "modify", "item", [99], saved(99)), "zsync's own PNG");
+  assert.ok(t(false, "add", "item-tag", ["2-500"]) && !t(false, "add", "item-tag", ["8-500"]), "tags");
+  items[2].attachmentPath = "storage:renamed.pdf";
+  assert.ok(t(false, "modify", "item", [2], { 2: { changed: {} } }), "its file renamed or relinked (saved with nothing in changed)");
+});
+
+// Auto-export switched on for one project folder "R", with timers that are
+// recorded but never run, so what gets scheduled can be counted.
+async function autoRunning() {
+  const timers = [];
+  let observer = null;
+  const fake = vm.createContext({
+    TextEncoder, console,
+    setTimeout: (fn, ms) => timers.push({ fn, ms }),
+    clearTimeout: () => {},
+    IOUtils: { stat: async () => ({ size: 1, lastModified: 1 }), exists: async () => true },
+    PathUtils: { join: (...parts) => parts.join("/") },
+    Zotero: {
+      Items: { get: () => false }, Collections: { get: () => false },
+      Prefs: { get: (name) => (name === "extensions.zsync.autoExport" ? true : undefined), registerObserver: () => 1, unregisterObserver() {} },
+      Notifier: { registerObserver: (o) => { observer = o; return "zsync"; }, unregisterObserver() {} },
+      debug() {}, logError(e) { throw e; },
+    },
+  });
+  // a clock the test can set (the real one until it does)
+  vm.runInContext("{ const real = Date.now; Date.now = () => (globalThis.fakeNow ?? real()); }", fake);
+  for (const f of ["util", "auto"]) {
+    vm.runInContext(fs.readFileSync(path.join(REPO, "plugin", "content", `${f}.js`), "utf8"), fake, { filename: `${f}.js` });
+  }
+  fake.Zsync.exporter = { wasRendered: () => false };
+  fake.Zsync.config = { roots: () => ["R"], sameFolder: (a, b) => a === b, projects: async () => [] };
+  fake.Zsync.auto.startup();
+  // let the first look at zsync.json settle (it only takes note)
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  const start = timers.length;
+  return {
+    auto: fake.Zsync.auto,
+    notify: (...a) => observer.notify(...a),
+    scheduled: () => timers.length - start,
+    lastDelay: () => timers[timers.length - 1].ms,
+    setNow: (ms) => { fake.fakeNow = ms; },
+  };
+}
+
+test("changes that keep coming are exported at most 20 s after the first", async () => {
+  const { auto, notify, lastDelay, setNow } = await autoRunning();
+  auto.remember("R", { index: { libraryID: 1, recursive: false, collectionIDs: [10], ids: [1], keys: ["AAAAAAAA"], paths: [] }, ms: 5 });
+  // a comment on exported annotation 1, saved again and again
+  const save = (at) => {
+    setNow(at);
+    notify("modify", "item", [1], { 1: { changed: { annotationComment: "before" } } });
+    return lastDelay();
+  };
+  assert.equal(save(1000000), 1500, "the first save");
+  assert.equal(save(1012000), 1500);
+  assert.equal(save(1019000), 1000, "ends at 20 s after the first save");
+  assert.equal(save(1021000), 0, "overdue: at once");
+  auto.shutdown();
+});
+
+test("something erased while an export was reading it is exported again, once", async () => {
+  const { auto, notify, scheduled } = await autoRunning();
+  const index = (keys) => ({ libraryID: 1, recursive: false, collectionIDs: [10], ids: [1], keys, paths: [] });
+  auto.remember("R", { index: index(["AAAAAAAA"]), ms: 5 });
+  // a highlight made since that export, erased while the next export runs
+  notify("delete", "item", [50], { 50: { libraryID: 1, key: "HHHHHHHH" } });
+  assert.equal(scheduled(), 0, "the watch set it replaces does not know it");
+  auto.remember("R", { index: index(["AAAAAAAA", "HHHHHHHH"]), ms: 5 });
+  assert.equal(scheduled(), 1, "the export that read it is followed by another");
+  auto.remember("R", { index: index(["AAAAAAAA", "HHHHHHHH"]), ms: 5 });
+  assert.equal(scheduled(), 1, "only once");
+  // another library's object with the same key is not the same object
+  notify("delete", "item", [51], { 51: { libraryID: 2, key: "AAAAAAAA" } });
+  auto.remember("R", { index: index(["AAAAAAAA"]), ms: 5 });
+  assert.equal(scheduled(), 1);
+  auto.shutdown();
+});
+
+test("an export waits for things to be quiet, but never more than 20 s after the first change", () => {
+  const auto = autoWith();
+  const d = (base, waitedMs) => auto.exportDelay({ base, lastMs: 40, waitedMs });
+  assert.equal(d(1500, 0), 1500, "the first change");
+  assert.equal(d(1500, 12000), 1500, "changes still coming, well inside the cap");
+  assert.equal(d(1500, 19000), 1000, "the wait shrinks to end at 20 s");
+  assert.equal(d(1500, 20000), 0);
+  assert.equal(d(1500, 600000), 0, "long overdue: at once");
+  assert.equal(d(30000, 0), 20000, "a debounce longer than the cap is capped");
+});
+
+test("the export delay policy always gives a usable delay", () => {
+  const auto = autoWith();
+  for (const base of [250, 1500, 5000]) {
+    for (const lastMs of [null, 0, 40, 800, 20000]) {
+      for (const waitedMs of [0, 1000, 9000, 60000, 600000]) {
+        const ms = auto.exportDelay({ base, lastMs, waitedMs });
+        assert.ok(Number.isFinite(ms) && ms >= 0, JSON.stringify({ base, lastMs, waitedMs, ms }));
+      }
+    }
+  }
+});
+
 let failed = 0;
 for (const t of tests) {
   try {
-    t.fn();
+    await t.fn();
     console.log(`ok    ${t.name}`);
   }
   catch (e) {

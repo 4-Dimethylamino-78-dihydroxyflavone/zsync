@@ -66,6 +66,7 @@ zsync-done-changed = { $count ->
 }
 zsync-done-unchanged = Already up to date
 zsync-more-warnings = …and { $count } more (listed in annotations.json)
+zsync-auto-failed = zsync: could not update “{ $name }”
 
 ## Settings
 
@@ -87,9 +88,10 @@ zsync-prefs-find =
 zsync-prefs-no-config = There is no zsync.json in { $folder }. Link a collection to it from the collection’s right-click menu instead.
 zsync-prefs-auto-title = Automatic export
 zsync-prefs-auto =
-    .label = Export a project a few seconds after anything in its collection changes
-zsync-prefs-auto-help = Only this device. Changes synced from other devices are picked up too.
+    .label = Keep project folders up to date automatically
+zsync-prefs-auto-help = A project is exported moments after anything in its collection changes, including changes synced from other devices and edits to its zsync.json. This setting is for this device only.
 zsync-prefs-status-never = not exported yet
 zsync-prefs-status-ok = exported { $when }: { $items } items, { $annotations } annotations
+zsync-prefs-status-auto = updated automatically { $when }: { $items } items, { $annotations } annotations
 zsync-prefs-status-error = error: { $message }
 zsync-prefs-status-missing = { $message }
