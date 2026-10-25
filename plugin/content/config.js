@@ -80,8 +80,8 @@ Zsync.config = (() => {
         if (!ok) fail(root, `"documents.${key}.${field}" must be ${names ? "a name or a list of names" : "a non-empty string"}`);
         if (field === "type" && !/^[A-Za-z]+$/.test(value)) fail(root, `"documents.${key}.type" must be a Zotero item type such as letter, email or document`);
       }
-      if (doc.citekey !== undefined && !/^[A-Za-z0-9_:.\-+/]+$/.test(doc.citekey)) {
-        fail(root, `"documents.${key}.citekey" may only contain letters, digits and _ : . - + /`);
+      if (doc.citekey !== undefined && !Zsync.citekeys.isCitable(doc.citekey)) {
+        fail(root, `"documents.${key}.citekey" may only contain letters, digits, _ and -, with . or : between them (so that @${doc.citekey} works in Typst)`);
       }
       if (doc.date !== undefined && !validDate(doc.date)) {
         fail(root, `"documents.${key}.date" must be a real date like 2026, 2026-09, 2026-09-04 or 2026-09-04T13:05`);

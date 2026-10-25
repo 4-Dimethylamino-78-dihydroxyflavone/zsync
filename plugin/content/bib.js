@@ -44,9 +44,9 @@ Zsync.bib = (() => {
     return found(builtin, true);
   }
 
-  // The last few translator outputs, by what they were made from. An
-  // automatic export whose items have not changed since reuses one instead
-  // of running the translator again: Better BibTeX can take seconds on a big
+  // The last few bibliographies, by what they were made from. An automatic
+  // export whose items have not changed since reuses one instead of running
+  // the translator again: Better BibTeX can take seconds on a big
   // collection, and queues behind its own auto-exports. Its settings are not
   // visible from here, so an export a person asks for always runs the
   // translator, as does the first one after Zotero starts.
@@ -56,15 +56,17 @@ Zsync.bib = (() => {
   // What the items' entries are made from, as far as zsync can see: each
   // item's whole data (toJSON: fields, creators, tags, relations; not just
   // dateModified, which only counts whole seconds), its citation key (Better
-  // BibTeX may keep it outside the item), its attachments (the file field)
-  // and, for a translator that writes them, its child notes. In the given
-  // order: translators keep it. Hashed, so a remembered key stays small.
-  // null when something is not at hand: then the translator runs.
-  function madeFrom(items, translator) {
+  // BibTeX may keep it outside the item) and the key zsync gives it, its
+  // attachments (the file field) and, for a translator that writes them, its
+  // child notes. In the given order: translators keep it. Hashed, so a
+  // remembered key stays small. null when something is not at hand: then
+  // the translator runs.
+  function madeFrom(items, translator, keyOf) {
     try {
       const parts = items.map((it) => JSON.stringify([
         it.toJSON(),
         Zsync.collect.citationKeyOf(it),
+        keyOf(it),
         it.getAttachments(false).map((id) => {
           const a = Zotero.Items.get(id);
           return a ? [id, a.attachmentPath, a.getField("title"), a.attachmentContentType, a.attachmentLinkMode, !!a.deleted] : [id];
@@ -100,23 +102,29 @@ Zsync.bib = (() => {
     }
   }
 
-  // reuse: true lets an automatic export take the text of an earlier run
-  // made from the same items (the result then has reused: true).
-  async function exportItems(items, wanted, { reuse = false } = {}) {
-    await Zotero.Schema.schemaUpdatePromise;
+  // Better BibTeX fills in a new item's citation key from a listener that
+  // can miss items (while Zotero syncs, or when another item saved alongside
+  // fails), and until then exports the item with no key at all. When it is
+  // set to fill keys in by itself (fillKeyAfter > 0), ask it to fill in the
+  // missing ones now, before they are exported: its keys follow its own
+  // formula and are unique in the whole library.
+  async function fillMissingKeys(items) {
+    if (!Zotero.BetterBibTeX) return;
+    if (!(Number(Zotero.Prefs.get("translators.better-bibtex.fillKeyAfter")) > 0)) return;
+    const ids = items.filter((it) => !Zsync.collect.citationKeyOf(it)).map((it) => it.id);
+    if (!ids.length) return;
     await betterBibTeXReady();
-    const translator = await findTranslator(wanted);
-    const { translatorID, label, target, fallback } = translator;
-    // An empty export set makes Better BibTeX throw; an empty bib is right.
-    if (!items.length) return { text: "", label, target, fallback, reused: false };
-    const key = madeFrom(items, translator);
-    if (reuse && key && recent.has(key)) {
-      const text = recent.get(key);
-      keep(key, text);
-      // only the text is remembered: which translator was found, and
-      // whether that was a fallback, is this lookup's
-      return { text, label, target, fallback, reused: true };
+    const km = Zotero.BetterBibTeX.KeyManager;
+    if (!km || typeof km.fill !== "function") return;
+    try {
+      await withTimeout(Promise.resolve(km.fill(ids)), 30000, "Better BibTeX filling in citation keys");
     }
+    catch (e) {
+      Zsync.util.log(`Better BibTeX did not fill in citation keys: ${e.message}`);
+    }
+  }
+
+  async function translate(translatorID, items, label) {
     const tr = new Zotero.Translate.Export();
     // setItems empties the array it is given, so hand it a copy; pass the
     // translator's ID, not the cached translator object (Better BibTeX
@@ -132,11 +140,90 @@ Zsync.bib = (() => {
     if (!text && (error || ok === false)) {
       throw error instanceof Error ? error : new Error(`${label} export failed${error ? `: ${error}` : ""}`);
     }
+    return text;
+  }
+
+  // The translator's entries, each under the key zsync gives its item
+  // (keyOf). Items whose own citation key is that key are exported together,
+  // and must each come out under it; the others (no key of their own, one
+  // Typst cannot cite, one another item has) are exported one at a time and
+  // given theirs, as is any item that did not come out under its key. An
+  // item the translator cannot export gets a short entry from zsync, so its
+  // @key still works. records: annotations.json's items, by key.
+  // Returns { text, notes }.
+  async function exportWithKeys(items, translator, keyOf, records) {
+    const { translatorID, label } = translator;
+    const own = (it) => Zsync.collect.citationKeyOf(it) === keyOf(it);
+    const alone = items.filter((it) => !own(it));
+    const together = items.filter(own);
+    const notes = [];
+    const text = together.length ? await translate(translatorID, together, label) : "";
+    const want = new Map(together.map((it) => [keyOf(it), it]));
+    const kept = [];
+    let dropped = 0;
+    for (const c of Zsync.util.splitBib(text)) {
+      if (c.entry && c.entry.cited && !want.delete(c.entry.key)) dropped++;
+      else if (c.text.trim()) kept.push(c.text.trim());
+    }
+    for (const it of want.values()) {
+      alone.push(it);
+      notes.push(`${label} did not write item ${it.key} under its citation key ${keyOf(it)}; zsync exported it again`);
+    }
+    // the usual case: the translator's text, as it wrote it
+    if (!alone.length && !dropped) return { text, notes };
+    const style = /biblatex/i.test(label) ? "biblatex" : "bibtex";
+    const added = [];
+    for (const it of alone) {
+      const key = keyOf(it);
+      let entry = null;
+      try {
+        const found = Zsync.util.splitBib(await translate(translatorID, [it], label)).filter((c) => c.entry && c.entry.cited);
+        if (found.length === 1) entry = Zsync.util.withKey(found[0].text.trim(), key);
+      }
+      catch (e) {
+        Zsync.util.log(`${label} could not export item ${it.key}: ${e.message}`);
+      }
+      if (!entry) {
+        entry = Zsync.standalone.bibEntry({ title: null, creators: [], "date-iso": null, ...records[key], citekey: key }, style);
+        notes.push(`${label} could not export item ${it.key} by itself; zsync wrote a short entry for @${key}`);
+      }
+      added.push({ key, entry });
+    }
+    added.sort((a, b) => a.key.localeCompare(b.key));
+    return { text: [...kept, ...added.map((a) => a.entry)].join("\n\n") + "\n", notes };
+  }
+
+  // reuse: true lets an automatic export take the bibliography of an earlier
+  // run made from the same items (the result then has reused: true).
+  // keys: item ID -> the key collect.js gave the item (its own when it has
+  // one); records: annotations.json's items, for the rare entry zsync has to
+  // write itself. Returns { text, label, target, fallback, reused, notes },
+  // notes being warnings for the report.
+  async function exportItems(items, wanted, { reuse = false, keys = new Map(), records = {} } = {}) {
+    await Zotero.Schema.schemaUpdatePromise;
+    await betterBibTeXReady();
+    const translator = await findTranslator(wanted);
+    const { translatorID, label, target, fallback } = translator;
+    // An empty export set makes Better BibTeX throw; an empty bib is right.
+    if (!items.length) return { text: "", label, target, fallback, reused: false, notes: [] };
+    const keyOf = (it) => keys.get(it.id) || Zsync.collect.citationKeyOf(it);
+    const key = madeFrom(items, translator, keyOf);
+    if (reuse && key && recent.has(key)) {
+      const made = recent.get(key);
+      keep(key, made);
+      // which translator was found, and whether that was a fallback, is
+      // this lookup's
+      return { ...made, label, target, fallback, reused: true };
+    }
+    // keys are only BibTeX's: CSL JSON and the like are written as they come
+    const made = target === "bib"
+      ? await exportWithKeys(items, translator, keyOf, records)
+      : { text: await translate(translatorID, items, label), notes: [] };
     // The translator may have read a newer state of the items than the key
     // describes (Better BibTeX can queue for seconds): keep the text only
     // when nothing changed meanwhile.
-    if (key && madeFrom(items, translator) === key) keep(key, text);
-    return { text, label, target, fallback, reused: false };
+    if (key && madeFrom(items, translator, keyOf) === key) keep(key, made);
+    return { ...made, label, target, fallback, reused: false };
   }
 
   // Entries for standalone documents (see standalone.js), in the style of the
@@ -155,5 +242,5 @@ Zsync.bib = (() => {
     return out ? out + "\n" : "";
   }
 
-  return { findTranslator, exportItems, standaloneEntries, finish, BBT_TRANSLATORS };
+  return { findTranslator, fillMissingKeys, exportItems, standaloneEntries, finish, BBT_TRANSLATORS };
 })();

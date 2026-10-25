@@ -9,10 +9,10 @@ import { fileURLToPath } from "node:url";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ctx = vm.createContext({ TextEncoder, console });
-for (const f of ["util", "snapshot", "standalone"]) {
+for (const f of ["util", "snapshot", "citekeys", "standalone"]) {
   vm.runInContext(fs.readFileSync(path.join(REPO, "plugin", "content", `${f}.js`), "utf8"), ctx, { filename: `${f}.js` });
 }
-const { util, snapshot, standalone } = ctx.Zsync;
+const { util, snapshot, citekeys, standalone } = ctx.Zsync;
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
 const tests = [];
@@ -371,6 +371,268 @@ test("keys for titles in other scripts and special letters", () => {
   assert.equal(standalone.baseCitekey({ creators: [], title: "Правила проживания", date: "2026" }), "", "falls back to the attachment key");
   const { keys } = standalone.assignCitekeys([{ attKey: "CYRLLLLL", dateAdded: "x", base: "", year: "2026" }], []);
   assert.equal(keys.get("CYRLLLLL"), "docCYRLLLLL2026");
+});
+
+// ---- citation keys that always work (citekeys.js)
+
+// Typst 0.15.1, asked about each key: a bib entry under it, cited as @key
+const TYPST_CITES = ["eby2010", "müller2010", "李2010", "eby:2010", "eby.2010", "eby-2010", "eby_2010", "2010eby", "-eby2010",
+  "eby2010-", "_eby2010", "Eby", "IUGS-ICS2024", "godfrey-smithLineFireDebris", "ebyTrinititeAtomicRock2010a"];
+// the whole file unreadable (whitespace, nothing), or no @ citation (the rest)
+const TYPST_FAILS = ["", "Eby 2010", "eby\t2010", "eby—2010", "eby/2010", "eby+2010", "eby'2010", "eby\"2010", "eby#2010", "eby%2010",
+  "eby(2010)", "eby=2010", "eby~2010", "eby\\2010", "eby$2010", "eby&2010", "eby^2010", "eby!2010", "eby?2010", "eby*2010",
+  "eby@2010", "eby;2010", "eby<2010>", "eby[2010]", "eby|2010", "eby`2010", "eby2010.", "eby2010:"];
+
+// a string of anything: letters from several scripts, punctuation, BibTeX's
+// special characters, whitespace, control characters, emoji and lone surrogates
+function randomText(rand, max = 24) {
+  const pool = ["a", "Z", "é", "ß", "Ø", "李", "Я", "ع", "ש", " ", "\t", "\n", ",", "{", "}", "=", "%", "#", "\\", "\"", "'", "’",
+    "—", "–", "-", ".", ":", "/", "@", "~", "^", "&", "$", "<i>", "</i>", "0", "7", "😀", "́", "\u0000", "\ud800", "_", "(", ")"];
+  let s = "";
+  for (let n = Math.floor(rand() * max); n > 0; n--) s += pool[Math.floor(rand() * pool.length)];
+  return s;
+}
+function seeded(seed) {
+  return () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+}
+
+test("isCitable says what Typst reads and cites with @key", () => {
+  for (const k of TYPST_CITES) assert.ok(citekeys.isCitable(k), k);
+  for (const k of TYPST_FAILS) assert.ok(!citekeys.isCitable(k), JSON.stringify(k));
+  for (const k of [null, undefined, 42, {}]) assert.equal(citekeys.isCitable(k), false);
+});
+
+test("repair keeps what Typst can cite, and only that", () => {
+  assert.equal(citekeys.repair("Eby 2010"), "Eby2010");
+  assert.equal(citekeys.repair("eby—2010"), "eby2010");
+  assert.equal(citekeys.repair("smith/2020."), "smith2020");
+  assert.equal(citekeys.repair("doe..2020::x"), "doe.2020:x");
+  assert.equal(citekeys.repair("müller 2010"), "müller2010");
+  assert.equal(citekeys.repair(" ... "), "");
+  assert.equal(citekeys.repair(null), "");
+  const rand = seeded(7);
+  for (let i = 0; i < 3000; i++) {
+    const s = randomText(rand);
+    const r = citekeys.repair(s);
+    assert.ok(r === "" || citekeys.isCitable(r), `${JSON.stringify(s)} -> ${JSON.stringify(r)}`);
+  }
+});
+
+test("key pieces follow Better BibTeX's auth.lower + shorttitle(3,3) + year", () => {
+  const pick = (f) => { const p = plain(citekeys.parts(f)); return [p.auth, p.words.join(" "), p.year]; };
+  const author = (lastName, creatorType = "author") => ({ firstName: "X", lastName, creatorType });
+  // the three items that broke a bibliography, as Better BibTeX keyed them in the end
+  assert.deepEqual(pick({ creators: [author("Eby"), author("Hermes")], title: "Trinitite—the atomic rock", date: "2010-09-00 2010-09" }),
+    ["eby", "Trinitite Atomic Rock", "2010"]);
+  assert.deepEqual(pick({ creators: [author("Vlasova")], title: "Nuclear Melt Glass from Experimental Field, Semipalatinsk Test Site", date: "2022-12-01 2022-12-01" }),
+    ["vlasova", "Nuclear Melt Glass", "2022"]);
+  assert.deepEqual(pick({ creators: [], title: "Miller–Urey experiment", date: "2026-10-05 2026-10-05T04:02:57Z" }),
+    ["", "Miller Urey Experiment", "2026"]);
+  // names: single-field names whole, dashes kept as "-", apostrophes dropped
+  assert.equal(citekeys.parts({ creators: [{ name: "Kurzgesagt – In a Nutshell", creatorType: "author" }] }).auth, "kurzgesagt-inanutshell");
+  assert.equal(citekeys.parts({ creators: [author("Godfrey-Smith")] }).auth, "godfrey-smith");
+  assert.equal(citekeys.parts({ creators: [{ name: "What's It Like", creatorType: "author" }] }).auth, "whatsitlike");
+  assert.equal(citekeys.parts({ creators: [author("Ångström")] }).auth, "angstrom");
+  // whose name: the item type's main creator, else editor, translator, anyone
+  assert.equal(citekeys.parts({ creators: [author("Cast", "castMember"), author("Madsen", "director")], primary: "director" }).auth, "madsen");
+  assert.equal(citekeys.parts({ creators: [author("Gosling", "castMember"), author("Hand", "editor")] }).auth, "hand");
+  assert.equal(citekeys.parts({ creators: [author("Tr", "translator"), author("Gosling", "castMember")] }).auth, "tr");
+  // a video in Zotero 10, whose main creator type is "creator", made by a director
+  assert.equal(citekeys.parts({ creators: [author("Madsen", "director")], primary: "creator" }).auth, "madsen");
+  assert.equal(citekeys.parts({ creators: [{ firstName: "Plato", lastName: "", creatorType: "author" }, author("Jowett", "translator")] }).auth, "jowett",
+    "no family name: not counted");
+  // titles: markup, skip words, single letters, apostrophes and hyphens as Better BibTeX treats them
+  assert.deepEqual(pick({ title: "Into Eternity: A Film for the Future" }), ["", "Eternity Film Future", ""]);
+  assert.deepEqual(pick({ title: "<i>Homo sapiens</i> and the 105mm lens" }), ["", "Homo Sapiens 105mm", ""]);
+  assert.deepEqual(pick({ title: "Earth's oceans" }), ["", "Earths Oceans", ""]);
+  assert.deepEqual(pick({ title: "Miller-Urey revisited" }), ["", "MillerUrey Revisited", ""]);
+  // nothing ASCII can stand for (zsync does not transliterate as Better BibTeX can)
+  assert.deepEqual(pick({ title: "李白诗集 😀", date: "0000-00-00 n.d." }), ["", "", ""]);
+  // years
+  for (const [date, year] of [["c. 1850", "1850"], ["1999/2000", "1999"], ["Spring 2019", "2019"], ["", ""], [null, ""], ["12345", ""]]) {
+    assert.equal(citekeys.parts({ date }).year, year, String(date));
+  }
+});
+
+test("keys zsync makes are the ones Better BibTeX's default formula makes", () => {
+  // Better BibTeX 9.0.71 in Zotero 10.0.6, asked to propose a key for each
+  // item (KeyManager.propose); creators as [family name, type], one-field
+  // names marked "1"
+  const cases = [
+    ["author", "Trinitite—the atomic rock", "2010-09-00 2010-09", [["Eby", "author"], ["Hermes", "author"]], "ebyTrinititeAtomicRock2010"],
+    ["author", "Nuclear Melt Glass from Experimental Field, Semipalatinsk Test Site", "2022-12-01 2022-12-01", [["Vlasova", "author"]], "vlasovaNuclearMeltGlass2022"],
+    ["author", "Miller–Urey experiment", "2026-10-05 2026-10-05T04:02:57Z", [], "MillerUreyExperiment2026"],
+    ["creator", "Into Eternity: A Film for the Future", "2010-00-00 2010", [["Madsen", "director"]], "madsenEternityFilmFuture2010"],
+    ["author", "Models of the Mind: How Physics, Engineering and Mathematics Have Shaped Our Understanding of the Brain", "2021-00-00 2021", [["Lindsay", "author"]], "lindsayModelsMindHow2021"],
+    ["author", "Can someone explain the geological time scale to me?", "2018-00-00 2018", [], "CanSomeoneExplain2018"],
+    ["creator", "What happens if you destroy a black hole?", "2020-00-00 2020", [["Kurzgesagt – In a Nutshell", "director", 1]], "kurzgesagt-inanutshellWhatHappensIf2020"],
+    ["author", "Full Text of the Baseline Test from Blade Runner 2049", "", [["262588213843476", "author", 1]], "262588213843476FullTextBaseline"],
+    ["author", "Nikon MC 105mm f/2.8 VR S", "", [], "NikonMC105mm"],
+    ["author", "In the line of fire: debris throwing by wild octopuses", "", [["Godfrey-Smith", "author"]], "godfrey-smithLineFireDebris"],
+    ["creator", "Existential crisis class: why we exist", "2025-00-00 2025", [["What's It Like", "director", 1]], "whatsitlikeExistentialCrisisClass2025"],
+    ["author", "Earth's oceans and the deep biosphere", "2020-00-00 2020", [["O'Brien", "author"]], "obrienEarthsOceansDeep2020"],
+    ["author", "<i>Homo sapiens</i> and the 105mm lens", "2019-00-00 2019", [["Lee", "author"]], "leeHomoSapiens105mm2019"],
+    ["author", "Miller-Urey revisited", "2008-00-00 2008", [["Johnson", "author"]], "johnsonMillerUreyRevisited2008"],
+    ["author", "Über die Natur des Lichts", "1900-00-00 1900", [["Ångström", "author"]], "angstromUberNaturLichts1900"],
+    ["author", "A is for atom", "1953-00-00 1953", [["Bass", "author"]], "bassAtom1953"],
+    ["author", "2049: the year after", "2017-00-00 2017", [["Villeneuve", "author"]], "villeneuve2049Year2017"],
+    ["author", "Input/output: a primer", "1999-00-00 1999", [["Knuth", "author"]], "knuthInputOutputPrimer1999"],
+    ["author", "Handbook of geology", "2020-00-00 2020", [["Hand", "editor"]], "handHandbookGeology2020"],
+    ["author", "", "2026-00-00 2026", [], "2026"],
+    ["author", "Café ménu", "2025-00-00 2025", [], "CafeMenu2025"],
+    ["author", "“Quoted” words here", "2024-00-00 2024", [["Smith", "author"]], "smithQuotedWordsHere2024"],
+    ["author", "Rocks — a history", "2023-00-00 2023", [["Stone", "author"]], "stoneRocksHistory2023"],
+    ["director", "Blade Runner 2049", "2017-00-00 2017", [["Villeneuve", "director"], ["Gosling", "castMember"]], "villeneuveBladeRunner20492017"],
+    ["author", "Grand Unified Theories of Everything Everywhere", "1850-00-00 c. 1850", [["van der Waals", "author"]], "vanderwaalsGrandUnifiedTheories1850"],
+    ["author", "Die Rolle der Pilze im Boden", "1999-00-00 1999/2000", [["Müller", "author"]], "mullerRollePilzeIm1999"],
+  ];
+  for (const [primary, title, date, people, key] of cases) {
+    const creators = people.map(([name, creatorType, one]) => (one ? { name, creatorType } : { firstName: "X", lastName: name, creatorType }));
+    assert.equal(citekeys.generate({ creators, primary, title, date, itemKey: "8XK2M4PQ" }), key, title);
+  }
+  // no author, title or date: Better BibTeX's zotero-item-<item ID>, but with
+  // the item key, which is the same on every device
+  assert.equal(citekeys.generate({ creators: [], title: "", date: "", itemKey: "8XK2M4PQ" }), "zotero-item-8XK2M4PQ");
+  assert.equal(citekeys.generate({ title: "李白诗集", itemKey: "8XK2M4PQ" }), "zotero-item-8XK2M4PQ", "nothing zsync can spell in ASCII");
+});
+
+test("generate always gives a citable key, whatever the item holds", () => {
+  const rand = seeded(42);
+  const types = ["journalArticle", "webpage", "film", "case", "", "a b"];
+  for (let i = 0; i < 5000; i++) {
+    const creators = [];
+    for (let n = Math.floor(rand() * 3); n > 0; n--) {
+      creators.push(rand() < 0.5
+        ? { firstName: randomText(rand, 8), lastName: randomText(rand, 12), creatorType: rand() < 0.7 ? "author" : "editor" }
+        : { name: randomText(rand), creatorType: "author" });
+    }
+    const fields = {
+      creators: rand() < 0.1 ? null : creators,
+      title: rand() < 0.1 ? null : randomText(rand, 60),
+      date: randomText(rand, 12) + (rand() < 0.5 ? ` ${1000 + Math.floor(rand() * 1100)}` : ""),
+      type: types[Math.floor(rand() * types.length)],
+      itemKey: rand() < 0.05 ? randomText(rand, 8) : "8XK2M4PQ",
+    };
+    const key = citekeys.generate(fields);
+    assert.ok(citekeys.isCitable(key), `${JSON.stringify(fields)} -> ${JSON.stringify(key)}`);
+    assert.equal(citekeys.generate(fields), key, "the same item, the same key");
+  }
+  assert.ok(citekeys.isCitable(citekeys.generate(undefined)));
+});
+
+test("assign: keys of their own first, as they are; the others made, repaired and kept", () => {
+  const it = (itemKey, dateAdded, stored, generated) => ({ itemKey, dateAdded, title: `T ${itemKey}`, stored, generated });
+  const { keys, warnings } = citekeys.assign([
+    it("AAAAAAAA", "2026-01-01 00:00:00", "doe2026", "x"),
+    it("BBBBBBBB", "2026-01-02 00:00:00", "doe2026", "x"),         // the same key, added later
+    it("CCCCCCCC", "2026-01-03 00:00:00", "", "doe2026"),          // none of its own; made key taken
+    it("DDDDDDDD", "2026-01-04 00:00:00", "Eby 2010", "x"),        // one Typst cannot cite
+    it("EEEEEEEE", "2026-01-05 00:00:00", "", "ebyTrinitite2010"),
+    it("FFFFFFFF", "2025-12-31 00:00:00", "?!", "smith2020"),      // nothing left of its own key
+  ]);
+  assert.deepEqual(Object.fromEntries(keys), {
+    AAAAAAAA: "doe2026", BBBBBBBB: "doe2026a", CCCCCCCC: "doe2026b", DDDDDDDD: "Eby2010", EEEEEEEE: "ebyTrinitite2010", FFFFFFFF: "smith2020",
+  });
+  assert.equal(warnings.length, 5);
+  assert.match(warnings.find((w) => w.includes("BBBBBBBB")), /both have the citation key doe2026; cite BBBBBBBB as @doe2026a/);
+  assert.match(warnings.find((w) => w.includes("EEEEEEEE")), /no citation key in Zotero; cite it as @ebyTrinitite2010 until it has one/);
+  assert.match(warnings.find((w) => w.includes("DDDDDDDD")), /"Eby 2010" .* cannot be cited in Typst; cite it as @Eby2010/);
+});
+
+test("assign: a key zsync made stays with its item", () => {
+  const it = (itemKey, dateAdded, stored, generated) => ({ itemKey, dateAdded, stored, generated });
+  // an older item with the same made key joins: the newer one keeps the plain key it had
+  let r = citekeys.assign([it("NEWWWWWW", "2026-05-01", "", "smith2020"), it("OLDDDDDD", "2026-01-01", "", "smith2020")],
+    new Map([["NEWWWWWW", "smith2020"]]));
+  assert.deepEqual(Object.fromEntries(r.keys), { NEWWWWWW: "smith2020", OLDDDDDD: "smith2020a" });
+  assert.ok(!r.warnings.some((w) => /changed/.test(w)));
+  // ... unless an item's own key in Zotero now claims it
+  r = citekeys.assign([it("NEWWWWWW", "2026-05-01", "", "smith2020"), it("OWNNNNNN", "2026-06-01", "smith2020", "x")],
+    new Map([["NEWWWWWW", "smith2020"]]));
+  assert.deepEqual(Object.fromEntries(r.keys), { OWNNNNNN: "smith2020", NEWWWWWW: "smith2020a" });
+  assert.match(r.warnings.find((w) => /changed/.test(w)), /NEWWWWWW changed from smith2020 to smith2020a/);
+  // a made key that no longer fits the item (its title changed) is made again
+  r = citekeys.assign([it("NEWWWWWW", "2026-05-01", "", "jonesOther2021")], new Map([["NEWWWWWW", "smith2020"]]));
+  assert.equal(r.keys.get("NEWWWWWW"), "jonesOther2021");
+});
+
+// Better BibTeX's text for an item without a key (what broke a real
+// bibliography), then a normal entry, a comment and Zotero's own style
+const KEYLESS_BIB = [
+  "@article{",
+  "  title = {Nuclear {{Melt Glass}} from {{Experimental Field}}},",
+  "  date = {2022-12-01},",
+  "}",
+  "",
+  "@article{ebyTrinititeAtomicRock2010a,",
+  "  title = {Trinitite—the Atomic Rock},",
+  "  abstract = {Braces \\{ escaped, and a line that looks like an entry:",
+  "@article{notAnEntry, still the abstract}},",
+  "}",
+  "",
+  "@comment{jabref-meta: databaseType:biblatex;}",
+  "",
+  "@book{Eby 2010,",
+  "\ttitle = {Tabs},",
+  "}",
+  "",
+].join("\n");
+
+test("splitBib finds every entry and its key, and gives the text back", () => {
+  const chunks = util.splitBib(KEYLESS_BIB);
+  assert.equal(chunks.map((c) => c.text).join(""), KEYLESS_BIB);
+  assert.deepEqual(plain(chunks.filter((c) => c.entry).map((c) => c.entry)), [
+    { type: "article", key: "", cited: true },
+    { type: "article", key: "ebyTrinititeAtomicRock2010a", cited: true },
+    { type: "comment", key: "jabref-meta: databaseType:biblatex;", cited: false },
+    { type: "book", key: "Eby 2010", cited: true },
+  ]);
+  assert.equal(util.splitBib("@misc{title = {Only fields}, year = {2020}}").at(0).entry.key, "", "fields right after the brace");
+});
+
+test("withKey puts a key where it belongs, also into an entry without one", () => {
+  assert.equal(util.withKey("@article{\n  title = {T},\n}", "vlasova2022"), "@article{vlasova2022,\n  title = {T},\n}");
+  assert.equal(util.withKey("@book{Eby 2010,\n\ttitle = {T},\n}", "Eby2010"), "@book{Eby2010,\n\ttitle = {T},\n}");
+  assert.equal(util.withKey("@misc{title = {T, with comma}}", "k"), "@misc{k,\n  title = {T, with comma}}");
+  assert.equal(util.withKey("@misc{bare}", "k"), "@misc{k,}");
+  assert.equal(util.withKey("not an entry", "k"), null);
+});
+
+test("checkBib leaves a good bibliography alone and fixes every key Typst cannot use", () => {
+  const good = "@article{a,\n  title = {A},\n}\n\n@book{b,\n  title = {B},\n}\n";
+  assert.deepEqual(plain(citekeys.checkBib(good)), { text: good, warnings: [] });
+  const bad = `${KEYLESS_BIB}\n@misc{ebyTrinititeAtomicRock2010a,\n  title = {Twice},\n}\n\n@misc{eby—2010,\n  title = {Dash},\n}\n`;
+  const { text, warnings } = citekeys.checkBib(bad);
+  const keys = util.splitBib(text).filter((c) => c.entry && c.entry.cited).map((c) => c.entry.key);
+  assert.deepEqual(plain(keys), ["entry", "ebyTrinititeAtomicRock2010a", "Eby2010", "ebyTrinititeAtomicRock2010aa", "eby2010"]);
+  assert.equal(warnings.length, 4);
+  assert.match(text, /@comment\{jabref-meta: databaseType:biblatex;\}/, "comments untouched");
+});
+
+test("a bibliography checkBib has fixed is one Typst reads and cites (when typst is installed)", async (t) => {
+  const { execFileSync } = await import("node:child_process");
+  try { execFileSync("typst", ["--version"], { stdio: "pipe" }); }
+  catch { return console.log("      (typst not found; skipped)"); }
+  const dir = fs.mkdtempSync(path.join(REPO, "test", "fixtures", "out", "typst-"));
+  try {
+    const entries = TYPST_FAILS.map((k, i) => `@misc{${k},\n  title = {Entry ${i}},\n}`);
+    entries.push("@article{\n  title = {No key at all},\n}", "@misc{eby2010,\n  title = {Twice},\n}", "@misc{eby2010,\n  title = {Twice},\n}");
+    const { text } = citekeys.checkBib(entries.join("\n\n") + "\n");
+    const keys = util.splitBib(text).filter((c) => c.entry && c.entry.cited).map((c) => c.entry.key);
+    assert.equal(new Set(keys).size, entries.length);
+    fs.writeFileSync(path.join(dir, "refs.bib"), text);
+    fs.writeFileSync(path.join(dir, "cite.typ"), `${keys.map((k) => `@${k}`).join(" ")}\n#bibliography("refs.bib")\n`);
+    execFileSync("typst", ["compile", "cite.typ", "cite.pdf"], { cwd: dir, stdio: "pipe" });
+  }
+  catch (e) {
+    throw new Error(String(e.stderr || e.message));
+  }
+  finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ---- auto-export, against a fake Zotero

@@ -55,6 +55,75 @@ Zsync.util = (() => {
     return m ? `${m[1]}T${m[2]}Z` : null;
   }
 
+  // How much deeper inside braces a line of BibTeX ends than it starts
+  // (escaped braces do not count).
+  function braceDelta(line) {
+    let d = 0;
+    for (const ch of line.replace(/\\[{}]/g, "")) {
+      if (ch === "{") d++;
+      else if (ch === "}") d--;
+    }
+    return d;
+  }
+
+  // "@article{key," -> the opening, the type and whatever stands where the key
+  // goes. Better BibTeX writes an item without a key as "@article{" with the
+  // first field on the next line, which is what Typst then fails on.
+  const BIB_HEAD = /^([ \t]*@[ \t]*([A-Za-z]+)[ \t]*\{)([^,\n{}]*)/;
+
+  // BibTeX text cut into its top-level pieces, so that joining their text
+  // gives the text back: entries, and what lies between them. An entry starts
+  // with @ at the start of a line outside any braces (as Better BibTeX and
+  // Zotero's own translators write them) and ends where its braces balance.
+  // [{ text, entry }]: entry is null between entries, else { type, key,
+  // cited }, key being "" for an entry without one and cited false for
+  // @comment, @string and @preamble.
+  function splitBib(text) {
+    const out = [];
+    let entry = null;
+    let depth = 0;
+    let between = "";
+    for (const line of String(text).split(/(?<=\n)/)) {
+      if (!entry && BIB_HEAD.test(line)) {
+        if (between) out.push({ text: between, entry: null });
+        between = "";
+        entry = { text: "", entry: null };
+        depth = 0;
+      }
+      if (!entry) {
+        between += line;
+        continue;
+      }
+      entry.text += line;
+      depth += braceDelta(line);
+      if (depth <= 0) {
+        out.push(entry);
+        entry = null;
+      }
+    }
+    // braces that never balance: kept as they are
+    if (entry) out.push(entry);
+    if (between) out.push({ text: between, entry: null });
+    for (const c of out) {
+      const m = c.text.match(BIB_HEAD);
+      if (!m) continue;
+      const type = m[2].toLowerCase();
+      c.entry = { type, key: m[3].includes("=") ? "" : m[3], cited: !["comment", "string", "preamble"].includes(type) };
+    }
+    return out;
+  }
+
+  // One entry's text with key in the key's place (or put in, for an entry
+  // without one); null when the text does not start like an entry.
+  function withKey(text, key) {
+    const m = String(text).match(BIB_HEAD);
+    if (!m) return null;
+    const [all, open, , found] = m;
+    const rest = text.slice(all.length);
+    if (found.includes("=")) return `${open}${key},\n  ${found.trimStart()}${rest}`;
+    return `${open}${key}${rest.startsWith(",") ? "" : ","}${rest}`;
+  }
+
   // Remove whole top-level fields from BibTeX/BibLaTeX text. Both Better
   // BibTeX and Zotero's own translators put each field on its own line
   // ("  file = {...},"), and a field value may continue over several lines,
@@ -62,14 +131,7 @@ Zsync.util = (() => {
   function stripBibFields(text, fields) {
     if (!fields || !fields.length) return text;
     const names = new Set(fields.map((f) => f.toLowerCase()));
-    const delta = (line) => {
-      let d = 0;
-      for (const ch of line.replace(/\\[{}]/g, "")) {
-        if (ch === "{") d++;
-        else if (ch === "}") d--;
-      }
-      return d;
-    };
+    const delta = braceDelta;
     const lines = text.split("\n");
     const out = [];
     let depth = 0;  // 1 = directly inside an entry, where fields start
@@ -217,7 +279,7 @@ Zsync.util = (() => {
 
   return {
     log, isKey, stableStringify, sortedObject, parseExtra, isoFromMultipart, isoFromSQL,
-    stripBibFields, projectPath, relPath, readTextIfExists, writeTextIfChanged, copyFileAtomic,
+    splitBib, withKey, stripBibFields, projectPath, relPath, readTextIfExists, writeTextIfChanged, copyFileAtomic,
     statOrNull, sha256File, sha256Text, extname, pruneEmptyDirs,
   };
 })();

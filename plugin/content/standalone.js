@@ -303,16 +303,11 @@ Zsync.standalone = (() => {
     };
   }
 
-  // Letters without a decomposition, folded the way Better BibTeX does
-  const FOLD = { "ß": "ss", "ẞ": "SS", "ø": "o", "Ø": "O", "ł": "l", "Ł": "L", "æ": "ae", "Æ": "AE", "œ": "oe", "Œ": "OE",
-    "đ": "d", "Đ": "D", "ð": "d", "Ð": "D", "þ": "th", "Þ": "Th", "ı": "i" };
-
   // Better BibTeX-like key: auth.lower + shorttitle(3, 3) + year, or "" when
   // neither an author nor a title word survives (the caller then falls back
   // to one based on the attachment key).
   function baseCitekey({ creators, title, date }) {
-    const clean = (s) => String(s || "").replace(/[ßẞøØłŁæÆœŒđĐðÐþÞı]/g, (c) => FOLD[c])
-      .normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/[^A-Za-z0-9 ]+/g, " ");
+    const clean = (s) => Zsync.citekeys.ascii(s).replace(/[^A-Za-z0-9 ]+/g, " ");
     const first = (creators || []).find((c) => !c.role || c.role === "author");
     const auth = first ? clean(first.name).replace(/\s+/g, "").toLowerCase() : "";
     // like Better BibTeX: each word capitalised, the rest kept as written
@@ -323,12 +318,7 @@ Zsync.standalone = (() => {
     return auth + words.join("") + year;
   }
 
-  function suffix(i) {
-    let s = "";
-    let n = i;
-    do { s = String.fromCharCode(97 + (n % 26)) + s; n = Math.floor(n / 26) - 1; } while (n >= 0);
-    return s;
-  }
+  const { suffix, fits } = Zsync.citekeys;
 
   // Keys for every standalone document, unique among themselves and the
   // collection's real citation keys. docs: [{ attKey, dateAdded, override,
@@ -352,7 +342,6 @@ Zsync.standalone = (() => {
     }
     const rest = docs.filter((d) => !keys.has(d.attKey))
       .sort((a, b) => String(a.dateAdded).localeCompare(String(b.dateAdded)) || a.attKey.localeCompare(b.attKey));
-    const fits = (key, base) => key === base || (key.startsWith(base) && /^[a-z]+$/.test(key.slice(base.length)));
     for (const d of rest) {
       const prev = prevKeys.get(d.attKey);
       if (prev && !used.has(prev) && fits(prev, baseOf(d))) {

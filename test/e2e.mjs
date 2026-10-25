@@ -281,6 +281,120 @@ test("unknown translator falls back to built-in BibLaTeX with a warning", async 
   assert.match(read(path.join(root, "refs/zsync.bib")), /doe2026normal/);
 });
 
+// ---- citation keys that always work
+
+// Every item in annotations.json has an entry under its key in the bib,
+// Typst reads the bib, and @key cites each of them.
+async function typstCitesEverything(root, bibRel = "refs/zsync.bib") {
+  const d = readJSON(path.join(root, "refs/annotations.json"));
+  const bib = read(path.join(root, bibRel));
+  const keys = Object.keys(d.items);
+  for (const k of keys) assert.ok(bib.includes(`{${k},\n`), `${k} in the bib`);
+  fs.writeFileSync(path.join(root, "cite.typ"), `${keys.map((k) => `@${k}`).join(" ")}\n#bibliography(${js(`/${bibRel}`)})\n`);
+  const { execFileSync } = await import("node:child_process");
+  try { execFileSync("typst", ["compile", "cite.typ", "cite.pdf"], { cwd: root, stdio: "pipe" }); }
+  catch (e) { throw new Error(`typst: ${e.stderr}`); }
+  return d;
+}
+
+// A journal article put into the fixture collection without Better BibTeX
+// hearing of it, so that it has no citation key (as when Better BibTeX's
+// listener misses an item), or the given one. Returns its item key.
+const addItem = ({ title = "Trinitite—the atomic rock", citationKey = "" } = {}) => z(`
+  const it = new Zotero.Item("journalArticle");
+  it.libraryID = lib;
+  it.setField("title", ${js(title)});
+  it.setField("date", "2010-09");
+  it.setCreators([{ firstName: "Nelson", lastName: "Eby", creatorType: "author" }]);
+  if (${js(citationKey)}) it.setField("citationKey", ${js(citationKey)});
+  it.addToCollection(coll.id);
+  await it.saveTx({ skipNotifier: true });
+  return it.key;
+`);
+const eraseItems = (keys) => z(`for (const k of ${js(keys)}) { const it = byKey(k); if (it) await it.eraseTx(); } return true;`);
+const keyInZotero = (key) => z(`return byKey(${js(key)}).getField("citationKey");`);
+// Better BibTeX's "fill in keys after this many seconds" (0: only when asked); returns the old value
+const bbtFillAfter = (seconds) => z(`const p = "translators.better-bibtex.fillKeyAfter"; const old = Zotero.Prefs.get(p);
+  Zotero.Prefs.set(p, ${js(seconds)}); return old;`);
+const entryOf = (d, itemKey) => Object.entries(d.items).find(([, it]) => it.key === itemKey);
+
+test("keys: Better BibTeX fills in a key it missed before the item is exported", async () => {
+  const root = fresh("keys-bbt", { zsync: 1, collection: COLL });
+  const old = await bbtFillAfter(1);
+  const item = await addItem();
+  try {
+    assert.equal(await keyInZotero(item), "", "no key yet");
+    const r = await exportProject(root);
+    const filled = await keyInZotero(item);
+    // its own formula (auth.lower + shorttitle(3,3) + year), made unique in the library
+    assert.match(filled, /^ebyTrinititeAtomicRock2010[a-z]*$/);
+    const d = await typstCitesEverything(root);
+    assert.deepEqual([entryOf(d, item)[0], entryOf(d, item)[1].citekey], [filled, filled]);
+    assert.ok(!r.warnings.some((w) => w.includes(item)), "nothing to warn about");
+  }
+  finally {
+    await eraseItems([item]);
+    await bbtFillAfter(old);
+  }
+});
+
+test("keys: an item nobody keyed gets one from zsync, the same in the bib and annotations.json", async () => {
+  const root = fresh("keys-none", { zsync: 1, collection: COLL });
+  // Better BibTeX set to make keys only when asked: zsync leaves Zotero alone
+  const old = await bbtFillAfter(0);
+  const item = await addItem();
+  try {
+    const r = await exportProject(root);
+    assert.equal(await keyInZotero(item), "", "Zotero unchanged");
+    const d = await typstCitesEverything(root);
+    const [key, rec] = entryOf(d, item);
+    assert.equal(key, "ebyTrinititeAtomicRock2010", "made as Better BibTeX's default formula would");
+    assert.equal(rec.citekey, null);
+    assert.ok(r.warnings.some((w) => w.includes(item) && w.includes(`@${key}`)), "the report says what to cite");
+    assert.equal(readJSON(path.join(root, "refs/zsync/manifest.json")).citekeys[item], key, "remembered for next time");
+    assert.deepEqual((await exportProject(root)).changed, [], "a second export changes nothing");
+  }
+  finally {
+    await eraseItems([item]);
+    await bbtFillAfter(old);
+  }
+});
+
+test("keys: a key Typst cannot cite is repaired, and a key used twice is told apart", async () => {
+  const root = fresh("keys-bad", { zsync: 1, collection: COLL });
+  const bad = await addItem({ title: "A key with a space", citationKey: "Eby 2010" });
+  const twin = await addItem({ title: "A twin", citationKey: "doe2026normal" });
+  try {
+    const r = await exportProject(root);
+    const d = await typstCitesEverything(root);
+    assert.deepEqual(entryOf(d, bad).map((x, i) => (i ? x.citekey : x)), ["Eby2010", "Eby 2010"]);
+    assert.deepEqual(entryOf(d, twin).map((x, i) => (i ? x.citekey : x)), ["doe2026normala", "doe2026normal"]);
+    assert.equal(d.items.doe2026normal.title, "Normal fixture document", "the item added first keeps its key");
+    assert.ok(r.warnings.some((w) => w.includes(`"Eby 2010"`) && w.includes("@Eby2010")));
+    assert.ok(r.warnings.some((w) => w.includes(twin) && w.includes("@doe2026normala")));
+  }
+  finally {
+    await eraseItems([bad, twin]);
+  }
+});
+
+test("keys: Zotero's own BibLaTeX exporter gets the same keys", async () => {
+  const root = fresh("keys-builtin", { zsync: 1, collection: COLL, bibTranslator: "BibLaTeX" });
+  const old = await bbtFillAfter(0);
+  const none = await addItem();
+  const bad = await addItem({ title: "Slash and dot", citationKey: "smith/2020." });
+  try {
+    await exportProject(root);
+    const d = await typstCitesEverything(root);
+    assert.equal(entryOf(d, bad)[0], "smith2020");
+    assert.equal(entryOf(d, none)[1].citekey, null);
+  }
+  finally {
+    await eraseItems([none, bad]);
+    await bbtFillAfter(old);
+  }
+});
+
 test("copySources: annotated copies only annotated files, none copies nothing", async () => {
   const root = fresh("src", { zsync: 1, collection: COLL });
   await exportProject(root);
