@@ -274,13 +274,21 @@ Zsync.exporter = (() => {
       }
       return null;
     }
-    const { text, label, target, fallback, reused } = await Zsync.bib.exportItems(model.regularItems, cfg.bibTranslator, { reuse });
+    const { text, label, target, fallback, reused, notes } = await Zsync.bib.exportItems(model.regularItems, cfg.bibTranslator,
+      { reuse, keys: model.citekeys, records: model.data.items });
     report.bibReused = reused;
     if (fallback) report.warnings.push(`export translator "${cfg.bibTranslator}" is not installed; used Zotero's built-in "${label}"`);
+    report.warnings.push(...notes);
     let full = text.replace(/\s+$/, "");
     if (model.standaloneItems.length) {
       if (target === "bib") full += (full ? "\n\n" : "") + Zsync.bib.standaloneEntries(model.standaloneItems, label);
       else report.warnings.push(`"${label}" does not write BibTeX, so the ${model.standaloneItems.length} standalone documents have no bibliography entries`);
+    }
+    if (target === "bib") {
+      // one bad key would stop Typst reading any of the file
+      const checked = Zsync.citekeys.checkBib(full);
+      full = checked.text;
+      report.warnings.push(...checked.warnings);
     }
     const bib = Zsync.bib.finish(full, cfg.bibStripFields);
     const rel = U.relPath(cfg.bib);
@@ -296,7 +304,7 @@ Zsync.exporter = (() => {
   function body(m) {
     if (!m) return null;
     return JSON.stringify({ collection: m.collection, outputs: m.outputs, sources: m.sources, images: m.images,
-      bib: m.bib, documents: m.documents || {}, retry: m.retry || {} });
+      bib: m.bib, documents: m.documents || {}, citekeys: m.citekeys || {}, retry: m.retry || {} });
   }
 
   // What the manifest remembers about each standalone document, so that its
@@ -416,6 +424,9 @@ Zsync.exporter = (() => {
         sources,
         images,
         documents: documentsOf(model),
+        // the keys zsync gave items that had none (or none Typst can cite),
+        // so that each keeps its key on the next export, on any device
+        citekeys: model.madeKeys,
         retry: U.sortedObject(retry),
       };
       if (body(manifest) !== body(prev) || !prevFound || ownKey(prevFound.rel) !== ownKey(manifestRel)) {

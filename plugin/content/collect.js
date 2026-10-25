@@ -1,7 +1,9 @@
 /* global Zsync, Zotero, IOUtils, DOMParser */
-// Reads one collection (read only) and shapes it into the annotations.json
-// model described in docs/SCHEMA.md. File copying and image rendering happen
-// later, in exporter.js; this module only records what they need.
+// Reads one collection and shapes it into the annotations.json model
+// described in docs/SCHEMA.md. It changes nothing in the library, except
+// that it lets Better BibTeX fill in citation keys it missed (see build).
+// File copying and image rendering happen later, in exporter.js; this
+// module only records what they need.
 var Zsync = globalThis.Zsync || {};
 globalThis.Zsync = Zsync;
 
@@ -37,6 +39,23 @@ Zsync.collect = (() => {
     }
     catch (e) {}
     return "";
+  }
+
+  // What citekeys.generate makes a key from
+  function keyFields(item) {
+    let primary = "author";
+    try {
+      primary = Zotero.CreatorTypes.getName(Zotero.CreatorTypes.getPrimaryIDForType(item.itemTypeID)) || primary;
+    }
+    catch (e) {}
+    return {
+      creators: item.getCreatorsJSON(),
+      primary,
+      title: item.getField("title", false, true),
+      date: item.getField("date", true, true),
+      type: item.itemType,
+      itemKey: item.key,
+    };
   }
 
   function filenameOf(att) {
@@ -156,31 +175,33 @@ Zsync.collect = (() => {
     const regularItems = [];
     const files = [];           // { key, path, contentType, annotated, record }
     const imageAnnotations = [];  // { annotation item, attachment item, record }
-    const usedCitekeys = new Map();
     const trackedIDs = [];      // attachment and annotation item IDs
 
     await Zotero.Items.loadDataTypes(tops);
     const regular = tops.filter((i) => i.isRegularItem());
     const standalone = tops.filter((i) => !i.isRegularItem());
 
-    // citation keys first, so every attachment and annotation can refer to them
-    const citekeyOf = new Map();
-    const realCitekey = new Map();
-    for (const item of [...regular].sort((a, b) => a.key.localeCompare(b.key))) {
-      let ck = citationKeyOf(item);
-      realCitekey.set(item.id, ck || null);
-      if (!ck) {
-        ck = item.key;
-        warnings.push(`item ${item.key} ("${item.getField("title", false, true)}") has no citation key; keyed by its item key`);
-      }
-      if (usedCitekeys.has(ck)) {
-        const other = usedCitekeys.get(ck);
-        const alt = `${ck}-${item.key}`;
-        warnings.push(`citation key ${ck} is used by items ${other} and ${item.key}; the second is keyed ${alt}`);
-        ck = alt;
-      }
-      usedCitekeys.set(ck, item.key);
-      citekeyOf.set(item.id, ck);
+    // Citation keys first, so every attachment and annotation can refer to
+    // them: Better BibTeX's, after it has filled in any it missed (the one
+    // change zsync makes to the library, and only Better BibTeX's own), else
+    // one zsync gives the item (see citekeys.js).
+    await Zsync.bib.fillMissingKeys(regular);
+    const realCitekey = new Map(regular.map((item) => [item.id, citationKeyOf(item) || null]));
+    const prevKeys = new Map(Object.entries((prev && prev.citekeys && typeof prev.citekeys === "object") ? prev.citekeys : {})
+      .filter(([, v]) => typeof v === "string"));
+    const assigned = Zsync.citekeys.assign(regular.map((item) => ({
+      itemKey: item.key,
+      dateAdded: item.dateAdded,
+      title: item.getField("title", false, true),
+      stored: realCitekey.get(item.id) || "",
+      generated: Zsync.citekeys.generate(keyFields(item)),
+    })), prevKeys);
+    warnings.push(...assigned.warnings);
+    const citekeyOf = new Map(regular.map((item) => [item.id, assigned.keys.get(item.key)]));
+    // the keys that are not the items' own, for the manifest (see prevKeys)
+    const madeKeys = {};
+    for (const item of regular) {
+      if (citekeyOf.get(item.id) !== realCitekey.get(item.id)) madeKeys[item.key] = citekeyOf.get(item.id);
     }
 
     // owner: the entry in `items` this attachment belongs to, as
@@ -394,7 +415,8 @@ Zsync.collect = (() => {
       // each attachment's stored path: a rename or relink says nothing else
       paths: files.map((f) => [f.attachment.id, f.attachment.attachmentPath || null]),
     };
-    return { collection, data, regularItems, standaloneItems, files, imageAnnotations, warnings, index };
+    return { collection, data, regularItems, standaloneItems, files, imageAnnotations, warnings, index,
+      citekeys: citekeyOf, madeKeys: sortedObject(madeKeys) };
   }
 
   return { libraryIDFor, librarySpecFor, libraryPath, resolveCollection, coveredCollections, citationKeyOf, build };

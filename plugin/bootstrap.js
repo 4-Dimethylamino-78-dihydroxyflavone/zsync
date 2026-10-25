@@ -5,7 +5,7 @@
 // enable, and runs startup() again in it.
 var Zsync;
 
-var ZSYNC_MODULES = ["util", "snapshot", "standalone", "config", "collect", "bib", "exporter", "auto", "ui", "api"];
+var ZSYNC_MODULES = ["util", "snapshot", "citekeys", "standalone", "config", "collect", "bib", "exporter", "auto", "ui", "api"];
 
 function install() {}
 

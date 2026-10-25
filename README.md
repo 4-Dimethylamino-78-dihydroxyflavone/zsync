@@ -11,7 +11,9 @@ into the project folder:
   saved email threads it also records which message in the thread holds the
   sentence (sender, sent time, signoff).
 - `refs/zsync.bib`: the bibliography, through Better BibTeX's Better BibLaTeX
-  (or Zotero's own BibLaTeX exporter when Better BibTeX is not installed).
+  (or Zotero's own BibLaTeX exporter when Better BibTeX is not installed),
+  with a citation key on every entry that Typst can read and `@key` cites,
+  the same as in `annotations.json`.
 - `refs/zsync/sources/`: copies of the annotated PDFs and snapshots.
 - `refs/zsync/images/`: PNGs of image and ink annotations, which Zotero
   renders without you opening the PDF.
@@ -61,6 +63,17 @@ Automatic exports reuse the last bibliography while no item in the
 collection has changed, which keeps highlighting and commenting cheap. An
 export you start yourself always makes the bibliography afresh: do one after
 changing Better BibTeX's settings.
+
+**Citation keys never break the bibliography.** Typst stops reading a `.bib`
+file at the first entry it cannot read, so one new item without a key used to
+break every citation in the document. Now, when Better BibTeX has missed a
+new item (it sometimes does, for example while Zotero syncs), zsync asks it
+to fill in the key before exporting, so the key follows your Better BibTeX
+formula and shows up in Zotero. An item that still has no key, a key Typst
+cannot cite (`Eby 2010`), or a key another item already has gets a working
+one from zsync instead, the same in the bib and `annotations.json`, and the
+export's warnings say what to cite. zsync never writes its own keys into
+Zotero. Details in [docs/SCHEMA.md](docs/SCHEMA.md#citation-keys).
 
 **Another device.** The project folder carries its `zsync.json`, so on another
 computer open **Settings → zsync → Add Existing Project Folder…** and pick the

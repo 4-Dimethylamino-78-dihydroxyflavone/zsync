@@ -50,7 +50,7 @@ Lives in the project root. Only `collection` is required.
 | `images` | `"refs/zsync/images"` | where PNGs go, as `<annotation key>.png` |
 | `manifest` | `"refs/zsync/manifest.json"` | bookkeeping: hashes, versions and the time of the last export that changed something |
 | `standalone` | `"items"` | files with no parent Zotero item: `"items"` gives each one an item of its own, with inferred metadata and a bib entry (see [Standalone documents](#standalone-documents)); `"attachments"` lists them only under `attachments` |
-| `documents` | `{}` | metadata for standalone documents, keyed by attachment key: `{ "7XK2M4PQ": { "citekey": "notice2026", "type": "letter", "title": "Room Inspection Notice", "date": "2026-09-04", "author": "Village Office", "recipient": "Sam Resident" } }`. Every field is optional; `author` and `recipient` may be lists |
+| `documents` | `{}` | metadata for standalone documents, keyed by attachment key: `{ "7XK2M4PQ": { "citekey": "notice2026", "type": "letter", "title": "Room Inspection Notice", "date": "2026-09-04", "author": "Village Office", "recipient": "Sam Resident" } }`. Every field is optional; `author` and `recipient` may be lists; a `citekey` may only hold letters, digits, `_` and `-`, with `.` or `:` between them, so that `@citekey` works in Typst |
 
 Only the list of project folders is per device (a Zotero preference); everything
 else travels with the project.
@@ -155,9 +155,12 @@ else travels with the project.
 
 Every regular item in the collection (and its subcollections when `recursive`),
 keyed by its citation key (Zotero 8+'s native field, which Better BibTeX fills).
-An item without a citation key is keyed by its Zotero item key and listed in
-`warnings`.
+The same key is the item's entry key in the bib, and every one of them is a
+key Typst reads and `@key` cites (see [Citation keys](#citation-keys)).
 
+- `citekey` is the item's own citation key in Zotero, or `null` when it has
+  none; it differs from the key the item is filed under only when zsync had
+  to give it another one.
 - `type` is Zotero's item type (`email`, `document`, `journalArticle`, …).
 - `title` is the title, or its equivalent for types without one (an email's
   subject, a statute's name, a case name).
@@ -175,6 +178,37 @@ An item without a citation key is keyed by its Zotero item key and listed in
 
 In annotations and attachments, `citekey` is always the key of their item in
 `items` (or `null`), and `item` its Zotero key.
+
+### Citation keys
+
+One entry in a `.bib` file that Typst cannot read (no key, a key with a
+space, the same key twice) stops it reading the whole file, so every
+citation in the document fails. zsync makes sure that does not happen:
+
+1. When Better BibTeX is installed and set to fill in keys by itself (its
+   default), zsync first asks it to fill in any it has missed. Better BibTeX
+   fills keys in from a listener that can skip items (for example while
+   Zotero syncs), and until then exports such an item with no key at all.
+   The keys follow your Better BibTeX formula, are unique in the whole
+   library and appear in Zotero, as if Better BibTeX had not missed them.
+   This is the only change zsync ever makes to the library.
+2. An item's own key is used as it is when Typst can cite it: letters
+   (any script), digits, `_` and `-`, with `.` or `:` only between them.
+3. Otherwise zsync gives the item a key, the same in `items` and in the bib,
+   and says so in `warnings`: its own key without the characters Typst cannot
+   cite (`Eby 2010` becomes `Eby2010`), or, for an item with no key at all,
+   one made the way Better BibTeX's default formula makes them (`auth.lower +
+   shorttitle(3,3) + year`, so `ebyTrinititeAtomicRock2010`; for an item with
+   no author, title or date, `zotero-item-<item key>`). Keys zsync makes are never written to Zotero,
+   only to its own files, and are kept in the manifest so that an item keeps
+   its key from one export to the next. Fix the key in Zotero (or let Better
+   BibTeX fill it in) and zsync uses that instead.
+4. A key two items share stays with the one added to Zotero first; the
+   other gets `a`, `b`, … appended, as Better BibTeX does.
+
+Before the bib is written, every entry in it is checked once more, so a
+key that slipped through all of the above (from an unusual translator, say)
+is fixed there too, with a warning.
 
 ### Standalone documents
 
@@ -283,7 +317,9 @@ Bookkeeping, rewritten only when something in it changes: `outputs`
 (annotations file → SHA-256), `bib` (`path`, `translator`, `sha256`),
 `sources` and `images` (attachment or annotation key → `path`, `sha256`),
 `documents` (what each standalone document was described as, with its
-citation key), `retry` (files zsync could not delete last time, tried again
+citation key), `citekeys` (item key → the key zsync gave a regular item that
+had no citation key of its own, or none Typst can cite; see
+[Citation keys](#citation-keys)), `retry` (files zsync could not delete last time, tried again
 on every export), and the time, plugin and Zotero versions of the last
 export that changed something.
 
