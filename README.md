@@ -38,6 +38,19 @@ Works with Zotero 9 and 10 on Windows, macOS and Linux (tested on Zotero
 writes a `zsync.json` there naming the collection, remembers the folder on
 this device, and exports.
 
+**Subcollections come along.** A folder gets the items of its collection
+and of every collection inside it, and the window that reports an export
+names the subcollections it took in. To leave them out, open **Settings →
+zsync** and untick *Include subcollections* under the folder; the line next
+to the tick lists which subcollections that takes in or leaves out, with
+how many items each holds. *Include subcollections in folders I link from
+now on*, below the list, sets what a newly linked folder starts with.
+
+A folder linked with zsync 0.3.0 or earlier keeps what it had, which was
+its own collection only: tick *Include subcollections* under it in Settings
+to bring the rest in. Until then, exporting it says which subcollections
+are left out.
+
 **Export.** Right-click the collection, **Export to zsync Project**. **Tools →
 Export All zsync Projects** exports every linked folder. A small window reports
 how many files changed and any warnings (for example a PDF that is not on
@@ -79,8 +92,9 @@ Zotero. Details in [docs/SCHEMA.md](docs/SCHEMA.md#citation-keys).
 computer open **Settings → zsync → Add Existing Project Folder…** and pick the
 folder; or right-click the same collection and link the same folder.
 
-**Settings** lists the project folders on this device with the result of the
-last export, and has Export, Show and Unlink buttons for each.
+**Settings** lists the project folders on this device, each with its
+collection, the result of the last export and whether its subcollections
+are included, and has Export, Show and Unlink buttons for each.
 
 ### Unlinking, renaming and moving folders
 
@@ -125,7 +139,9 @@ setting. Useful ones:
 }
 ```
 
-- `recursive: true` includes items in subcollections.
+- `recursive`: `true` (the default) includes items in subcollections,
+  `false` exports the collection's own items only. This is the *Include
+  subcollections* tick in Settings.
 - `bib: null` skips the bibliography (for example when Better BibTeX already
   keeps one up to date).
 - `copySources`: `"annotated"` (default), `"all"` or `"none"`. Copied PDFs can

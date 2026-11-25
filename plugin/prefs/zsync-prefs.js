@@ -44,12 +44,43 @@ var ZsyncPrefs = {
     return { cls: last.report.warnings.length ? "warn" : "ok", text, title: last.report.warnings.join("\n") };
   },
 
+  // "Melanin (11 items), Cleaning (4 items) and 3 more"; `full` lists them all
+  subNames(list, full = false) {
+    const api = this.api();
+    const max = full ? list.length : 3;
+    const names = list.slice(0, max).map((c) => api.t("zsync-prefs-sub", { name: c.name, count: c.items })).join(", ");
+    return list.length > max ? api.t("zsync-prefs-subs-more", { names, count: list.length - max }) : names;
+  },
+
+  // The "Include subcollections" tick of one folder, and next to it which
+  // subcollections that takes in (or leaves out) right now.
+  option(root, cover) {
+    const api = this.api();
+    const line = this.el("div", { class: "zsync-option" });
+    const box = this.el("xul:checkbox", { "data-l10n-id": "zsync-prefs-recursive", native: "true" });
+    if (cover.recursive) box.setAttribute("checked", "true");
+    box.addEventListener("command", () => {
+      box.disabled = true;
+      this.setRecursive(root, !!box.checked);
+    });
+    line.append(box);
+    const subs = cover.recursive ? cover.included.slice(1) : cover.skipped;
+    const text = !subs.length ? api.t("zsync-prefs-subs-none")
+      : api.t(cover.recursive ? "zsync-prefs-subs-included" : "zsync-prefs-subs-skipped", { names: this.subNames(subs) });
+    const hint = this.el("span", { class: "zsync-help" }, text);
+    if (subs.length > 3) hint.setAttribute("title", this.subNames(subs, true));
+    line.append(hint);
+    return line;
+  },
+
   async render() {
     let api;
     try { api = this.api(); }
     catch (e) { return; }
     const box = document.getElementById("zsync-projects");
     if (!box) return;
+    // a newer render (after a click) wins over one started before it
+    const run = this.renders = (this.renders || 0) + 1;
     const rows = [];
     const projects = await api.projects();
     for (const root of api.roots()) {
@@ -57,10 +88,18 @@ var ZsyncPrefs = {
       const row = this.el("div", { class: "zsync-project" });
       const info = this.el("div", { class: "zsync-info" });
       info.append(this.el("div", { class: "zsync-path" }, root));
+      let cover = null;
+      if (p && p.cfg) {
+        try { cover = await api.coverage(p.cfg); }
+        catch (e) { cover = null; }  // the status line says what is wrong
+        const name = (cover && cover.name) || p.cfg.name || p.cfg.collection;
+        info.append(this.el("div", { class: "zsync-collection" }, api.t("zsync-prefs-collection", { name })));
+      }
       const st = await this.status(root, p);
       const s = this.el("div", { class: `zsync-status ${st.cls}` }, st.text);
       if (st.title) s.setAttribute("title", st.title);
       info.append(s);
+      if (cover) info.append(this.option(root, cover));
       row.append(info);
       const buttons = this.el("xul:hbox", { class: "zsync-row-buttons" });
       const actions = p && p.missing
@@ -75,7 +114,22 @@ var ZsyncPrefs = {
       rows.push(row);
     }
     if (!rows.length) rows.push(this.el("p", { class: "zsync-help", "data-l10n-id": "zsync-prefs-empty" }));
+    if (run !== this.renders) return;
     box.replaceChildren(...rows);
+  },
+
+  // Tick or untick "Include subcollections" for one folder: save it in the
+  // folder's zsync.json and export, so the result shows at once.
+  async setRecursive(root, on) {
+    try {
+      await this.api().setRecursive(root, on);
+    }
+    catch (e) {
+      Zotero.alert(window, "zsync", this.api().t("zsync-error-config", { message: String((e && e.message) || e) }));
+      this.render();
+      return;
+    }
+    await this.exportRoots([root]);
   },
 
   async add() {

@@ -14,11 +14,13 @@
 			<button id="zsync-add" data-l10n-id="zsync-prefs-add"/>
 			<button id="zsync-export-all" data-l10n-id="zsync-prefs-export-all"/>
 		</hbox>
+		<checkbox id="zsync-recursive-default" preference="extensions.zsync.recursiveDefault" data-l10n-id="zsync-prefs-recursive-default" native="true"/>
+		<html:p class="zsync-help" data-l10n-id="zsync-prefs-recursive-default-help"/>
 	</groupbox>
 
 	<groupbox aria-labelledby="zsync-prefs-auto-title">
 		<label><html:h2 id="zsync-prefs-auto-title" data-l10n-id="zsync-prefs-auto-title"/></label>
-		<checkbox id="zsync-auto" preference="extensions.zsync.autoExport" data-l10n-id="zsync-prefs-auto"/>
+		<checkbox id="zsync-auto" preference="extensions.zsync.autoExport" data-l10n-id="zsync-prefs-auto" native="true"/>
 		<html:p class="zsync-help" data-l10n-id="zsync-prefs-auto-help"/>
 	</groupbox>
 </vbox>

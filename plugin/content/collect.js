@@ -92,6 +92,40 @@ Zsync.collect = (() => {
     return out;
   }
 
+  function ownItems(c) {
+    return c.getChildItems(false, false).filter((i) => !i.deleted && (i.isRegularItem() || i.isFileAttachment()));
+  }
+
+  // What a project covers, for telling people (the export itself uses
+  // coveredCollections):
+  //   included  the collections it reads, the project's own first
+  //   skipped   the subcollections it leaves out, when not recursive
+  // each as { key, name, items }. A subcollection's name is its path below
+  // the project's collection ("Fungal / Melanin"). items counts the regular
+  // items and parentless files directly in it; for a skipped one, only those
+  // the export does not hold anyway (an item can be in several collections).
+  async function coverage(collection, recursive) {
+    const below = Zotero.Collections.getByParent(collection.id, true).filter((c) => !c.deleted);
+    await Zotero.Collections.loadDataTypes([collection, ...below], ["childItems"]);
+    const byID = new Map(below.map((c) => [c.id, c]));
+    const pathOf = (c) => {
+      const names = [];
+      for (let x = c, n = 0; x && n < 64; x = byID.get(x.parentID), n++) names.unshift(x.name);
+      return names.join(" / ");
+    };
+    const held = new Set();
+    const included = [];
+    for (const c of [collection, ...(recursive ? below : [])]) {
+      const items = ownItems(c);
+      for (const i of items) held.add(i.id);
+      included.push({ key: c.key, name: c === collection ? c.name : pathOf(c), items: items.length });
+    }
+    const skipped = recursive ? [] : below.map((c) => (
+      { key: c.key, name: pathOf(c), items: ownItems(c).filter((i) => !held.has(i.id)).length }));
+    const byName = (a, b) => a.name.localeCompare(b.name);
+    return { included: [included[0], ...included.slice(1).sort(byName)], skipped: skipped.sort(byName) };
+  }
+
   // Regular items and standalone file attachments directly in the covered
   // collections, not in the trash, each once.
   async function topLevelItems(collections) {
@@ -416,8 +450,8 @@ Zsync.collect = (() => {
       paths: files.map((f) => [f.attachment.id, f.attachment.attachmentPath || null]),
     };
     return { collection, data, regularItems, standaloneItems, files, imageAnnotations, warnings, index,
-      citekeys: citekeyOf, madeKeys: sortedObject(madeKeys) };
+      citekeys: citekeyOf, madeKeys: sortedObject(madeKeys), coverage: await coverage(collection, cfg.recursive) };
   }
 
-  return { libraryIDFor, librarySpecFor, libraryPath, resolveCollection, coveredCollections, citationKeyOf, build };
+  return { libraryIDFor, librarySpecFor, libraryPath, resolveCollection, coveredCollections, coverage, citationKeyOf, build };
 })();

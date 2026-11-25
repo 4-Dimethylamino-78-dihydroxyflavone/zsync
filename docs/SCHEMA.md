@@ -19,7 +19,7 @@ Lives in the project root. Only `collection` is required.
   "library": "user",
   "collection": "P6MLNJX9",
   "name": "Village housing 2026",
-  "recursive": false,
+  "recursive": true,
   "annotations": "refs/annotations.json",
   "bib": "refs/zsync.bib",
   "bibTranslator": "Better BibLaTeX",
@@ -39,7 +39,7 @@ Lives in the project root. Only `collection` is required.
 | `library` | `"user"` | `"user"` for My Library, `"group:<groupID>"` for a group (the group ID from zotero.org, which is the same on every device) |
 | `collection` | required | the collection's 8-character key |
 | `name` | | the collection's name when it was linked; informational only |
-| `recursive` | `false` | include items in subcollections |
+| `recursive` | `true` | include the items of every collection inside this one; `false` exports the collection's own items only. *Include subcollections* in Settings → zsync writes this key. (Before zsync 0.4.0 the default was `false`, and linking wrote `false`.) |
 | `annotations` | `"refs/annotations.json"` | where the annotation snapshot goes |
 | `bib` | `"refs/zsync.bib"` | where the bibliography goes; `null` to skip it |
 | `bibTranslator` | `"Better BibLaTeX"` | export translator, by label or translator ID; falls back to Zotero's built-in `"BibLaTeX"` when it is not installed |

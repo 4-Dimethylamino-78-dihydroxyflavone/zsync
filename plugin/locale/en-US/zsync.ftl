@@ -65,14 +65,36 @@ zsync-done-changed = { $count ->
    *[other] { $count } files updated
 }
 zsync-done-unchanged = Already up to date
+zsync-done-subs = { $count ->
+    [one] Includes 1 subcollection: { $names }
+   *[other] Includes { $count } subcollections: { $names }
+}
+zsync-done-subs-skipped = { $count ->
+    [one] 1 subcollection is left out: { $names }. Settings → zsync can include it.
+   *[other] { $count } subcollections are left out: { $names }. Settings → zsync can include them.
+}
 zsync-more-warnings = …and { $count } more (listed in annotations.json)
 zsync-auto-failed = zsync: could not update “{ $name }”
 
 ## Settings
 
 zsync-prefs-projects-title = Project folders on this device
-zsync-prefs-projects-intro = Each folder holds a zsync.json that names its Zotero collection. To link a new collection, right-click it and choose “Link zsync Project Folder…”.
+zsync-prefs-projects-intro = Each folder is kept up to date with one Zotero collection and, unless you untick it below, the collections inside that one. To link a new collection, right-click it and choose “Link zsync Project Folder…”.
 zsync-prefs-empty = No project folders yet.
+zsync-prefs-collection = Collection “{ $name }”
+zsync-prefs-recursive =
+    .label = Include subcollections
+zsync-prefs-subs-none = (it has none yet)
+zsync-prefs-subs-included = { $names }
+zsync-prefs-subs-skipped = left out: { $names }
+zsync-prefs-sub = { $count ->
+    [one] { $name } (1 item)
+   *[other] { $name } ({ $count } items)
+}
+zsync-prefs-subs-more = { $names } and { $count } more
+zsync-prefs-recursive-default =
+    .label = Include subcollections in folders I link from now on
+zsync-prefs-recursive-default-help = Folders already linked keep their own setting, shown under each one above. It is saved in the folder’s zsync.json, so your other devices follow it too.
 zsync-prefs-add =
     .label = Add Existing Project Folder…
 zsync-prefs-export-all =

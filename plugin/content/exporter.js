@@ -460,6 +460,8 @@ Zsync.exporter = (() => {
     }
 
     report.index = model.index;
+    // which collections this export read, and which subcollections it left out
+    report.coverage = model.coverage;
     report.counts = {
       items: Object.keys(model.data.items).length,
       attachments: Object.keys(model.data.attachments).length,
