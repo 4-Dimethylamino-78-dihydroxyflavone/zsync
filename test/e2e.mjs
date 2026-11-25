@@ -56,6 +56,7 @@ test("link creates zsync.json and registers the folder", async () => {
   const written = readJSON(path.join(root, "zsync.json"));
   assert.equal(written.collection, COLL);
   assert.equal(written.name, "zsync fixture");
+  assert.equal(written.recursive, true, "a new link includes subcollections");
 });
 
 test("export writes every output, and a second export changes nothing", async () => {
@@ -71,7 +72,7 @@ test("export writes every output, and a second export changes nothing", async ()
 });
 
 test("annotations.json follows docs/SCHEMA.md", async () => {
-  const root = fresh("schema", { zsync: 1, collection: COLL });
+  const root = fresh("schema", { zsync: 1, collection: COLL, recursive: false });
   await exportProject(root);
   const d = readJSON(path.join(root, "refs/annotations.json"));
   assert.equal(d.zsync, 1);
@@ -232,12 +233,75 @@ test("email highlight is placed in the quoted message that holds it", async () =
   assert.deepEqual([m.index, m.count], [2, 2]);
 });
 
-test("recursive includes subcollection items", async () => {
-  const root = fresh("recursive", { zsync: 1, collection: COLL, recursive: true });
-  await exportProject(root);
+test("subcollections are included unless zsync.json says otherwise, and the report says which", async () => {
+  // no "recursive" key at all
+  const root = fresh("recursive", { zsync: 1, collection: COLL });
+  const r = await exportProject(root);
   const d = readJSON(path.join(root, "refs/annotations.json"));
   assert.ok(d.items.sub2026only);
   assert.ok(d.annotations.HLSUBAAA);
+  assert.deepEqual(r.coverage.included.map((c) => c.name), ["zsync fixture", "sub"]);
+  assert.deepEqual(r.coverage.included[1], { key: seeded.sub.key, name: "sub", items: 1 });
+  assert.deepEqual(r.coverage.skipped, []);
+  assert.equal(await z(`return Zotero.Zsync.coverageLine(${js(r.coverage)});`), "Includes 1 subcollection: sub");
+
+  const flat = fresh("recursive-off", { zsync: 1, collection: COLL, recursive: false });
+  const r2 = await exportProject(flat);
+  const d2 = readJSON(path.join(flat, "refs/annotations.json"));
+  assert.ok(!d2.items.sub2026only && !d2.annotations.HLSUBAAA);
+  assert.deepEqual(r2.coverage.included.map((c) => c.name), ["zsync fixture"]);
+  assert.deepEqual(r2.coverage.skipped, [{ key: seeded.sub.key, name: "sub", items: 1 }]);
+  assert.match(await z(`return Zotero.Zsync.coverageLine(${js(r2.coverage)});`), /^1 subcollection is left out: sub. Settings/);
+  // leaving subcollections out is a choice, not something wrong with the export
+  assert.ok(!r2.warnings.some((w) => /subcollection/.test(w)));
+  assert.equal(Object.keys(d2.items).length + 1, Object.keys(d.items).length);
+});
+
+test("Include subcollections: the default for new links, and each folder's own setting", async () => {
+  assert.equal(await z(`return Services.prefs.getDefaultBranch("").getBoolPref("extensions.zsync.recursiveDefault");`), true);
+  const root = fresh("recursive-setting");
+  try {
+    // switched off in Settings: a new link starts without subcollections
+    const linked = await z(`
+      Zotero.Prefs.set("extensions.zsync.recursiveDefault", false, true);
+      const c = await Zotero.Zsync.link(coll, ${js(root)});
+      return c.recursive;
+    `);
+    assert.equal(linked, false);
+    const file = path.join(root, "zsync.json");
+    assert.equal(readJSON(file).recursive, false);
+    // a key zsync does not know, and one it does: both survive the tick
+    fs.writeFileSync(file, JSON.stringify({ ...readJSON(file), copySources: "none", mine: [1, 2] }, null, 2));
+    const before = readJSON(file);
+    const live = await z(`
+      const off = await Zotero.Zsync.coverage(await Zotero.Zsync.readConfig(${js(root)}));
+      const cfg = await Zotero.Zsync.setRecursive(${js(root)}, true);
+      const on = await Zotero.Zsync.coverage(cfg);
+      return { off, on, recursive: cfg.recursive };
+    `);
+    assert.equal(live.recursive, true);
+    assert.deepEqual(readJSON(file), { ...before, recursive: true });
+    assert.deepEqual(Object.keys(readJSON(file)), Object.keys(before), "keys stay in their order");
+    assert.equal(live.off.name, "zsync fixture");
+    assert.equal(live.off.recursive, false);
+    assert.deepEqual(live.off.skipped.map((c) => [c.name, c.items]), [["sub", 1]]);
+    assert.equal(live.on.recursive, true);
+    assert.deepEqual(live.on.included.map((c) => c.name), ["zsync fixture", "sub"]);
+    const r = await exportProject(root);
+    assert.ok(readJSON(path.join(root, "refs/annotations.json")).items.sub2026only);
+    assert.equal(r.coverage.included.length, 2);
+    // and off again
+    await z(`await Zotero.Zsync.setRecursive(${js(root)}, false); return true;`);
+    await exportProject(root);
+    assert.ok(!readJSON(path.join(root, "refs/annotations.json")).items.sub2026only);
+    // a zsync.json that cannot be used is not rewritten
+    fs.writeFileSync(file, "{ not json");
+    await assert.rejects(z(`await Zotero.Zsync.setRecursive(${js(root)}, true); return true;`), /not valid JSON/);
+    assert.equal(read(file), "{ not json");
+  }
+  finally {
+    await z(`Zotero.Prefs.clear("extensions.zsync.recursiveDefault", true); await Zotero.Zsync.unlink(${js(root)}); return true;`);
+  }
 });
 
 test("missing file is a warning, not a failure", async () => {
@@ -250,7 +314,7 @@ test("missing file is a warning, not a failure", async () => {
 });
 
 test("bib: Better BibLaTeX, no file fields, only direct items", async () => {
-  const root = fresh("bib", { zsync: 1, collection: COLL });
+  const root = fresh("bib", { zsync: 1, collection: COLL, recursive: false });
   await exportProject(root);
   const bib = read(path.join(root, "refs/zsync.bib"));
   assert.match(bib, /@\w+\{doe2026normal,/);
@@ -606,9 +670,9 @@ test("auto-export is on by default", async () => {
 });
 
 test("auto-export follows zsync.json edits, reports mistakes, and picks a folder back up", async () => {
-  const root = fresh("auto-config", { zsync: 1, collection: COLL });
+  const root = fresh("auto-config", { zsync: 1, collection: COLL, recursive: false });
   const ann = path.join(root, "refs", "annotations.json");
-  const config = (extra) => fs.writeFileSync(path.join(root, "zsync.json"), JSON.stringify({ zsync: 1, collection: COLL, ...extra }));
+  const config = (extra) => fs.writeFileSync(path.join(root, "zsync.json"), JSON.stringify({ zsync: 1, collection: COLL, recursive: false, ...extra }));
   const saved = await autoOn([root]);
   try {
     await waitFor(() => exists(ann) && !readJSON(ann).items.sub2026only, "the first export");
@@ -990,6 +1054,58 @@ test("menus and settings pane render with labels", async () => {
   `);
   // the fixture collection is linked (see the "link" test), so Unlink is enabled
   assert.deepEqual(out, [["Export to zsync Project", false], ["Link zsync Project Folder…", false], ["Unlink zsync Project Folder…", false]]);
+});
+
+test("Settings: each folder shows its collection and an Include subcollections tick that works", async () => {
+  const root = fresh("pane");
+  const out = await z(`
+    const root = ${js(root)};
+    const saved = Zotero.Zsync.roots();
+    for (const r of saved) Zotero.Zsync.removeRoot(r);
+    await Zotero.Zsync.link(coll, root);
+    await Zotero.Zsync.exportProject(root);
+    const win = Zotero.Utilities.Internal.openPreferences("zsync-prefpane");
+    const config = async () => JSON.parse(await IOUtils.readUTF8(PathUtils.join(root, "zsync.json")));
+    const hasSub = async () => !!JSON.parse(await IOUtils.readUTF8(PathUtils.join(root, "refs", "annotations.json"))).items.sub2026only;
+    // the folder's row once it shows the tick in the wanted state
+    const row = async (checked) => {
+      for (let i = 0; i < 100; i++) {
+        await wait(200);
+        const r = win.document && win.document.querySelector("#zsync-projects .zsync-project");
+        const box = r && r.querySelector("checkbox");
+        if (!box || !box.getAttribute("label") || box.checked !== checked || box.disabled) continue;
+        if ((await config()).recursive !== checked || (await hasSub()) !== checked) continue;
+        return { label: box.getAttribute("label"), collection: r.querySelector(".zsync-collection").textContent,
+          hint: r.querySelector(".zsync-option .zsync-help").textContent };
+      }
+      throw new Error("the row never showed the tick " + (checked ? "on" : "off"));
+    };
+    const out = {};
+    try {
+      out.on = await row(true);
+      win.document.querySelector("#zsync-projects checkbox").click();
+      out.off = await row(false);
+      win.document.querySelector("#zsync-projects checkbox").click();
+      out.onAgain = await row(true);
+      const dflt = win.document.getElementById("zsync-recursive-default");
+      out.dflt = [dflt.getAttribute("label"), dflt.checked];
+      dflt.click();
+      await wait(300);
+      out.pref = Zotero.Prefs.get("extensions.zsync.recursiveDefault", true);
+    }
+    finally {
+      Zotero.Prefs.clear("extensions.zsync.recursiveDefault", true);
+      win.close();
+      await Zotero.Zsync.unlink(root);
+      for (const r of saved) Zotero.Zsync.addRoot(r);
+    }
+    return out;
+  `);
+  assert.deepEqual(out.on, { label: "Include subcollections", collection: "Collection “zsync fixture”", hint: "sub (1 item)" });
+  assert.equal(out.off.hint, "left out: sub (1 item)");
+  assert.deepEqual(out.onAgain, out.on);
+  assert.deepEqual(out.dflt, ["Include subcollections in folders I link from now on", true]);
+  assert.equal(out.pref, false, "the tick below the list is the preference");
 });
 
 // ---------------------------------------------------------------- run

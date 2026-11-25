@@ -333,9 +333,28 @@ Zsync.ui = (() => {
     return true;
   }
 
+  // "Melanin, Cleaning, Fungal, …": the first few names of a list of
+  // collections (see collect.coverage)
+  function someNames(list, max = 3) {
+    return list.slice(0, max).map((c) => c.name).join(", ") + (list.length > max ? ", …" : "");
+  }
+
+  // One line on the subcollections an export read, or left out although
+  // they hold items it does not have; null when there is nothing to say.
+  function coverageLine(cover) {
+    if (!cover) return null;
+    const subs = cover.included.slice(1);
+    if (subs.length) return t("zsync-done-subs", { count: subs.length, names: someNames(subs) });
+    const left = cover.skipped.filter((c) => c.items > 0);
+    if (left.length) return t("zsync-done-subs-skipped", { count: left.length, names: someNames(left) });
+    return null;
+  }
+
   function summary(report) {
     const n = report.changed.length + report.removed.length;
     const lines = [n ? t("zsync-done-changed", { count: n }) : t("zsync-done-unchanged")];
+    const cover = coverageLine(report.coverage);
+    if (cover) lines.push(cover);
     for (const w of report.warnings.slice(0, 3)) lines.push(`⚠ ${w}`);
     if (report.warnings.length > 3) lines.push(t("zsync-more-warnings", { count: report.warnings.length - 3 }));
     return lines;
@@ -437,6 +456,6 @@ Zsync.ui = (() => {
   return {
     startup, shutdown, addToWindow, removeFromWindow, t, pickFolder,
     linkCollection, exportCollection, exportRoots, exportAll, collectionFromContext,
-    unlinkInteractive, unlinkCollection, findInteractive, resolveMissing, notifyAutoFailure, PANE_ID,
+    unlinkInteractive, unlinkCollection, findInteractive, resolveMissing, notifyAutoFailure, coverageLine, PANE_ID,
   };
 })();

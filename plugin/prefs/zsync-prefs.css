@@ -45,3 +45,23 @@
   color: var(--fill-secondary, #666);
   margin-block: 4px;
 }
+
+.zsync-collection {
+  margin-block: 2px;
+}
+
+.zsync-option {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  column-gap: 6px;
+  margin-top: 2px;
+}
+
+.zsync-option checkbox {
+  margin: 0;
+}
+
+.zsync-option .zsync-help {
+  margin-block: 0;
+}

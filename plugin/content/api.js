@@ -97,6 +97,27 @@ Zsync.api = {
     return Zsync.config.read(root);
   },
 
+  // Include (true) or leave out (false) the subcollections of a folder's
+  // collection: writes "recursive" into its zsync.json, behind any export
+  // that is running. This does not export; the caller does.
+  setRecursive(root, recursive) {
+    return Zsync.exporter.queue(() => Zsync.config.update(root, { recursive: !!recursive }));
+  },
+
+  // What a project covers in Zotero right now, from its config:
+  // { name, recursive, included: [{ key, name, items }], skipped: [...] }
+  // (see collect.coverage). Throws when its collection cannot be found.
+  async coverage(cfg) {
+    const collection = await Zsync.collect.resolveCollection(cfg);
+    const cover = await Zsync.collect.coverage(collection, cfg.recursive);
+    return { name: collection.name, recursive: !!cfg.recursive, ...cover };
+  },
+
+  // The line an export's window shows about subcollections, or null
+  coverageLine(cover) {
+    return Zsync.ui.coverageLine(cover);
+  },
+
   addProject(root, cfg) {
     return Zsync.config.addProject(root, cfg);
   },

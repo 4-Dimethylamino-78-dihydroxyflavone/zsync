@@ -9,13 +9,17 @@ Zsync.config = (() => {
 
   const FILE = "zsync.json";
   const PREF_ROOTS = "extensions.zsync.projectRoots";
+  // Whether a folder linked on this device starts out with its collection's
+  // subcollections included (Settings → zsync). A zsync.json that does not
+  // say is recursive on every device, whatever this is set to.
+  const PREF_RECURSIVE = "extensions.zsync.recursiveDefault";
 
   const DEFAULTS = {
     zsync: 1,
     library: "user",
     collection: null,
     name: null,
-    recursive: false,
+    recursive: true,
     annotations: "refs/annotations.json",
     bib: "refs/zsync.bib",
     bibTranslator: "Better BibLaTeX",
@@ -142,6 +146,10 @@ Zsync.config = (() => {
     return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
   }
 
+  function recursiveDefault() {
+    return Zotero.Prefs.get(PREF_RECURSIVE, true) !== false;
+  }
+
   async function create(root, collection) {
     const cfg = {
       zsync: 1,
@@ -149,7 +157,7 @@ Zsync.config = (() => {
       library: Zsync.collect.librarySpecFor(collection.libraryID),
       collection: collection.key,
       name: collection.name,
-      recursive: false,
+      recursive: recursiveDefault(),
       annotations: DEFAULTS.annotations,
       bib: DEFAULTS.bib,
       copySources: DEFAULTS.copySources,
@@ -171,6 +179,20 @@ Zsync.config = (() => {
     raw.library = library;
     raw.collection = collection.key;
     raw.name = collection.name;
+    await writeTextIfChanged(file, stableStringify(raw));
+    return read(root);
+  }
+
+  // Change settings in an existing zsync.json, keeping everything else in it
+  // as it is (also keys this zsync does not know). Returns the new config.
+  async function update(root, changes) {
+    const file = PathUtils.join(root, FILE);
+    const text = await readTextIfExists(file);
+    if (text === null) throw new Error(`no ${FILE} in ${root}`);
+    // refuse to rewrite a file that cannot be used as it is
+    parse(root, text);
+    const raw = { ...JSON.parse(String(text).replace(/^﻿/, "")), ...changes };
+    parse(root, stableStringify(raw));
     await writeTextIfChanged(file, stableStringify(raw));
     return read(root);
   }
@@ -415,7 +437,7 @@ Zsync.config = (() => {
   }
 
   return {
-    FILE, PREF_ROOTS, DEFAULTS, parse, read, create, relink, roots, setRoots, addRoot, addProject, removeRoot, sameFolder,
+    FILE, PREF_ROOTS, PREF_RECURSIVE, DEFAULTS, parse, read, create, relink, update, recursiveDefault, roots, setRoots, addRoot, addProject, removeRoot, sameFolder,
     projects, projectsFor, identityOf, rememberIdentity, rootsRememberedFor, findMoved, relocate,
   };
 })();
