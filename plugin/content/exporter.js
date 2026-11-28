@@ -232,28 +232,64 @@ Zsync.exporter = (() => {
         report.warnings.push(`Zotero could not render the image annotations of ${att.key}: ${e.message}`);
       }
     }
+    const captions = cfg.imageNames === "descriptive" ? await findCaptions(model, prev, priority) : new Map();
+    const names = Zsync.imagenames.assign(model.imageAnnotations.map((ia) => {
+      const r = ia.record;
+      const item = r.citekey ? model.data.items[r.citekey] : null;
+      const att = model.data.attachments[r.attachment] || {};
+      return {
+        key: r.key,
+        type: r.type,
+        citekey: r.citekey,
+        title: item ? (item["short-title"] || item.title) : (att.title || String(att.filename || "").replace(/\.[A-Za-z0-9]{1,8}$/, "")),
+        page: r.page || (Number.isInteger(r["page-index"]) ? String(r["page-index"] + 1) : ""),
+        comment: r.comment,
+        caption: captions.get(r.key),
+      };
+    }), cfg.imageNames);
     for (const ia of model.imageAnnotations) {
       const key = ia.annotation.key;
-      const rel = relJoin(cfg.images, `${key}.png`);
+      const rel = relJoin(cfg.images, names.get(key));
       const dest = U.projectPath(cfg.root, rel);
       const before = prev && prev.images && prev.images[key];
       const samePlace = before && ownKey(before.path || "") === ownKey(rel);
       const destStat = await U.statOrNull(dest);
+      // what the manifest remembers: `caption` only when the page was looked at
+      const entry = (sha256, modified) => (captions.has(key)
+        ? { path: rel, sha256, modified, caption: captions.get(key) } : { path: rel, sha256, modified });
       // An existing PNG is kept until the annotation itself changes, so two
       // devices that render slightly different pixels do not fight.
       if (destStat && samePlace && before.modified === ia.record.modified) {
-        out[key] = before;
+        out[key] = entry(before.sha256, before.modified);
         ia.record.image = rel;
         continue;
       }
+      // The same picture under the name it had before (the item's title or
+      // key changed, a caption was found, "images" or "imageNames" changed):
+      // it goes to its new name as it is, also on a device that could not
+      // render it again. The old file is retired with the other old outputs.
       const cache = Zotero.Annotations.getCacheImagePath(ia.annotation);
-      if (!(await IOUtils.exists(cache))) {
+      const hasCache = await IOUtils.exists(cache);
+      const unchanged = before && before.modified === ia.record.modified;
+      const noImage = `no image for ${ia.record.type} annotation ${key} yet (open its PDF in Zotero once, or check the file is on this device)`;
+      if (before && !samePlace && typeof before.path === "string" && (unchanged || !hasCache)) {
+        const moved = await carryOver(cfg.root, before, dest, destStat);
+        if (moved) {
+          if (moved === "copied") report.changed.push(rel);
+          out[key] = entry(before.sha256, before.modified);
+          ia.record.image = rel;
+          // the annotation changed but cannot be rendered here: the old picture stays
+          if (!unchanged) report.warnings.push(noImage);
+          continue;
+        }
+      }
+      if (!hasCache) {
         if (destStat && samePlace) {
           // keep the old picture rather than lose it
-          out[key] = before;
+          out[key] = entry(before.sha256, before.modified);
           ia.record.image = rel;
         }
-        report.warnings.push(`no image for ${ia.record.type} annotation ${key} yet (open its PDF in Zotero once, or check the file is on this device)`);
+        report.warnings.push(noImage);
         continue;
       }
       const sha256 = await U.sha256File(cache);
@@ -262,9 +298,81 @@ Zsync.exporter = (() => {
         await U.copyFileAtomic(cache, dest);
         report.changed.push(rel);
       }
-      out[key] = { path: rel, sha256, modified: ia.record.modified };
+      out[key] = entry(sha256, ia.record.modified);
       ia.record.image = rel;
     }
+  }
+
+  // Put the PNG the last export wrote for an annotation where this export
+  // wants it, when it is still exactly what zsync wrote. Returns "copied",
+  // "there" (the new place already holds it) or false.
+  async function carryOver(root, before, dest, destStat) {
+    if (typeof before.sha256 !== "string") return false;
+    try {
+      if (destStat && destStat.type === "regular" && (await U.sha256File(dest)) === before.sha256) return "there";
+      const old = U.projectPath(root, before.path);
+      const st = await U.statOrNull(old);
+      if (!st || st.type !== "regular" || (await U.sha256File(old)) !== before.sha256) return false;
+      await U.copyFileAtomic(old, dest);
+      return "copied";
+    }
+    catch (e) {
+      U.log(`could not carry ${before.path} over: ${e.message}`);
+      return false;
+    }
+  }
+
+  // The caption on each picture's page ("Fig-4.9"), read from the PDF's
+  // text: annotation key -> the caption, or null when the page has none or
+  // several (zsync cannot tell which one the picture is). A key is absent
+  // when the page was not looked at: the comment names the figure, it is a
+  // drawing, or the file is not on this device. What an earlier export (on
+  // any device) found is kept until the annotation changes, so that every
+  // device gives a picture the same name.
+  const CAPTION_MAX_BYTES = 80 * 1024 * 1024;
+  const CAPTION_TIMEOUT = 60000;
+  async function findCaptions(model, prev, priority) {
+    const N = Zsync.imagenames;
+    const found = new Map();
+    const need = new Map();  // attachment id -> { att, list }
+    for (const ia of model.imageAnnotations) {
+      const r = ia.record;
+      const before = prev && prev.images && prev.images[r.key];
+      if (before && before.modified === r.modified && (typeof before.caption === "string" || before.caption === null)) {
+        found.set(r.key, before.caption);
+        continue;
+      }
+      if (r.type !== "image" || N.figureIn(r.comment)) continue;
+      if (!ia.attachment.isPDFAttachment() || !Number.isInteger(r["page-index"])) continue;
+      if (!need.has(ia.attachment.id)) need.set(ia.attachment.id, { att: ia.attachment, list: [] });
+      need.get(ia.attachment.id).list.push(ia);
+    }
+    for (const { att, list } of need.values()) {
+      let timer;
+      try {
+        const path = await att.getFilePathAsync();
+        const st = path ? await U.statOrNull(path) : null;
+        if (!st || st.size > CAPTION_MAX_BYTES) continue;
+        const upTo = Math.max(...list.map((ia) => ia.record["page-index"])) + 1;
+        const res = await Promise.race([
+          Zotero.PDFWorker.getFullText(att.id, upTo, priority),
+          new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error("timed out")), CAPTION_TIMEOUT); }),
+        ]);
+        // one form feed between pages
+        const pages = String((res && res.text) || "").split("\f");
+        for (const ia of list) {
+          const caps = N.captionsOn(pages[ia.record["page-index"]] || "");
+          found.set(ia.record.key, caps.length === 1 ? caps[0] : null);
+        }
+      }
+      catch (e) {
+        U.log(`could not read the text of ${att.key} to name its pictures: ${e.message}`);
+      }
+      finally {
+        clearTimeout(timer);
+      }
+    }
+    return found;
   }
 
   async function exportBib(cfg, model, prev, report, reuse) {

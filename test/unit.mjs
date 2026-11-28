@@ -9,10 +9,10 @@ import { fileURLToPath } from "node:url";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ctx = vm.createContext({ TextEncoder, console });
-for (const f of ["util", "snapshot", "citekeys", "standalone"]) {
+for (const f of ["util", "snapshot", "citekeys", "standalone", "imagenames"]) {
   vm.runInContext(fs.readFileSync(path.join(REPO, "plugin", "content", `${f}.js`), "utf8"), ctx, { filename: `${f}.js` });
 }
-const { util, snapshot, citekeys, standalone } = ctx.Zsync;
+const { util, snapshot, citekeys, standalone, imagenames } = ctx.Zsync;
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
 const tests = [];
@@ -783,6 +783,59 @@ test("the export delay policy always gives a usable delay", () => {
       }
     }
   }
+});
+
+test("image names: citation key, short title, page, figure and annotation key", () => {
+  const a = { key: "2JVIG4TD", type: "image", citekey: "cao2021", page: "3", comment: null, caption: "Fig-1",
+    title: "Unraveling the Structure and Function of Melanin through Synthesis" };
+  assert.equal(imagenames.fileName(a), "cao2021_[Unraveling the Structure and Function of]_p3_Fig-1_2JVIG4TD.png");
+  // the subtitle goes, and so does what a file system refuses
+  assert.equal(imagenames.fileName({ ...a, citekey: "cunneen:2024", caption: null,
+    title: "The plumes of Maralinga: Mapping nuclear fallout patterns over sixty years after atomic bomb testing" }),
+  "cunneen 2024_[The plumes of Maralinga]_p3_2JVIG4TD.png");
+  assert.equal(imagenames.fileName({ ...a, title: 'On "A/B" <tests>|*', caption: null }), "cao2021_[On A B tests]_p3_2JVIG4TD.png");
+  // the comment: a figure it names beats the page's caption; else its first words
+  assert.equal(imagenames.fileName({ ...a, title: "T", comment: "compare with fig. 4.9b below" }), "cao2021_[T]_p3_Fig-4.9b_2JVIG4TD.png");
+  assert.equal(imagenames.fileName({ ...a, title: "T", caption: null, comment: "melanin synthesis pathways: the five kinds, drawn as pentagons" }),
+    "cao2021_[T]_p3_melanin synthesis pathways the_2JVIG4TD.png");
+  // nothing known but the key
+  assert.equal(imagenames.fileName({ key: "INNRMAAA", type: "ink" }), "ink_INNRMAAA.png");
+  assert.equal(imagenames.fileName({ key: "IMNRMAAA", type: "image" }), "IMNRMAAA.png");
+  assert.equal(imagenames.fileName(a, "key"), "2JVIG4TD.png");
+  // never long enough to trouble Windows' 260-character paths
+  const long = imagenames.fileName({ key: "2JVIG4TD", type: "image", citekey: "x".repeat(90), title: "word ".repeat(60), page: "1234567890123456", comment: "y".repeat(200) });
+  assert.ok(long.length <= 150, String(long.length));
+  assert.doesNotMatch(long, /[. ]\.png$/);
+});
+
+test("image names: captions are told from sentences that mention a figure", () => {
+  const page = [
+    "as can be seen in the micrograph of",
+    "Figure 4.8 shows the same crystal, and",
+    "Figure 4.7, which was lit from behind.",
+    "Figure 4.9 This photograph of a snowflake was made",
+    "with a simple microscope.",
+    "FIGURE 4.9 (continued)",
+    "Table 2. Colour temperatures of common sources",
+    "Fig. S3: Supplementary spectra",
+    "Scheme 1 - Synthesis of eumelanin",
+    "Figures of merit are given below.",
+  ].join("\n");
+  assert.deepEqual(plain(imagenames.captionsOn(page)), ["Fig-4.9", "Table-2", "Fig-S3", "Scheme-1"]);
+  assert.deepEqual(plain(imagenames.captionsOn("no captions here\n")), []);
+  assert.equal(imagenames.figureIn("Figure 12"), "Fig-12");
+  assert.equal(imagenames.figureIn("see table 3–1"), "Table-3-1");
+  assert.equal(imagenames.figureIn("the figure"), null);
+  assert.equal(imagenames.figureIn("config 3"), null);
+});
+
+test("image names: two that would be one file get their keys", () => {
+  const names = imagenames.assign([
+    { key: "AAAAAAAA", type: "image", citekey: "doe2026", title: "T", page: "1" },
+    { key: "BBBBBBBB", type: "image", citekey: "doe2026", title: "T", page: "1" },
+  ]);
+  assert.equal(names.get("AAAAAAAA"), "doe2026_[T]_p1_AAAAAAAA.png");
+  assert.equal(new Set([...names.values()].map((n) => n.toLowerCase())).size, 2);
 });
 
 let failed = 0;

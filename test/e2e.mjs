@@ -489,23 +489,65 @@ test("a copy damaged outside zsync is repaired", async () => {
   assert.notEqual(read(f), "garbage");
 });
 
-test("image and ink annotations get PNGs, rendered without the reader", async () => {
+const IMG_NAMES = {
+  IMNRMAAA: "doe2026normal_[Normal fixture document]_p2_Fig-1_IMNRMAAA.png",
+  INNRMAAA: "doe2026normal_[Normal fixture document]_p1_ink_INNRMAAA.png",
+};
+
+test("image and ink annotations get PNGs, rendered without the reader and named after their source", async () => {
   const root = fresh("img", { zsync: 1, collection: COLL });
   await z(`for (const k of ["IMNRMAAA", "INNRMAAA"]) await Zotero.Annotations.removeCacheImage(byKey(k)); return true;`);
   await exportProject(root);
   const d = readJSON(path.join(root, "refs/annotations.json"));
   for (const k of ["IMNRMAAA", "INNRMAAA"]) {
     const img = d.annotations[k].image;
-    assert.equal(img, `refs/zsync/images/${k}.png`);
+    // citation key, short title, page, the caption on the page (or "ink"), annotation key
+    assert.equal(img, `refs/zsync/images/${IMG_NAMES[k]}`);
     const buf = fs.readFileSync(path.join(root, img));
     assert.equal(buf.subarray(1, 4).toString(), "PNG");
   }
   assert.equal(d.annotations.HLNRMAAA.image, null);
+  // the caption found on the page is remembered, for devices without the PDF
+  const m = readJSON(path.join(root, "refs/zsync/manifest.json"));
+  assert.equal(m.images.IMNRMAAA.caption, "Fig-1");
+  assert.ok(!("caption" in m.images.INNRMAAA));
+  const again = await exportProject(root);
+  assert.deepEqual(again.changed, []);
   // renderImages: false removes them
   fs.writeFileSync(path.join(root, "zsync.json"), JSON.stringify({ zsync: 1, collection: COLL, renderImages: false }));
   const r = await exportProject(root);
   assert.ok(r.removed.some((f) => f.endsWith("IMNRMAAA.png")));
   assert.equal(readJSON(path.join(root, "refs/annotations.json")).annotations.IMNRMAAA.image, null);
+});
+
+test("imageNames: key keeps the plain names; switching renames the same pictures, also without their PDF", async () => {
+  const root = fresh("imgnames", { zsync: 1, collection: COLL, imageNames: "key" });
+  await exportProject(root);
+  const dir = path.join(root, "refs", "zsync", "images");
+  assert.deepEqual(fs.readdirSync(dir).sort(), ["IMNRMAAA.png", "INNRMAAA.png"]);
+  const bytes = fs.readFileSync(path.join(dir, "IMNRMAAA.png"));
+  // a folder exported by zsync 0.4 has no captions in its manifest, and this
+  // device can neither render the pictures again nor read the PDF
+  const mf = path.join(root, "refs/zsync/manifest.json");
+  const old = readJSON(mf);
+  for (const e of Object.values(old.images)) delete e.caption;
+  fs.writeFileSync(mf, JSON.stringify(old, null, 2) + "\n");
+  fs.writeFileSync(path.join(root, "zsync.json"), JSON.stringify({ zsync: 1, collection: COLL }));
+  const att = readJSON(path.join(root, "refs/annotations.json")).annotations.IMNRMAAA.attachment;
+  await z(`for (const k of ["IMNRMAAA", "INNRMAAA"]) await Zotero.Annotations.removeCacheImage(byKey(k)); return true;`);
+  const r = await withoutFile(att, () => exportProject(root));
+  // no caption could be read, so the comment stands in for it (for now); the picture is the same one
+  const plainName = IMG_NAMES.IMNRMAAA.replace("_Fig-1_", "_the figure_");
+  assert.deepEqual(fs.readdirSync(dir).sort(), [plainName, IMG_NAMES.INNRMAAA].sort());
+  assert.ok(fs.readFileSync(path.join(dir, plainName)).equals(bytes));
+  assert.ok(r.removed.includes("refs/zsync/images/IMNRMAAA.png"));
+  assert.ok(!r.warnings.some((w) => /no image/.test(w)), r.warnings.join("\n"));
+  // with the PDF back, the caption is found and the picture renamed once more
+  await exportProject(root);
+  assert.deepEqual(fs.readdirSync(dir).sort(), Object.values(IMG_NAMES).sort());
+  assert.ok(fs.readFileSync(path.join(dir, IMG_NAMES.IMNRMAAA)).equals(bytes));
+  assert.deepEqual((await exportProject(root)).changed, []);
+  await assert.rejects(z(`return Zotero.Zsync.exportProject(${js(fresh("imgbad", { zsync: 1, collection: COLL, imageNames: "pretty" }))});`), /imageNames/);
 });
 
 test("bad zsync.json values are rejected with a clear message", async () => {

@@ -28,6 +28,7 @@ Zsync.config = (() => {
     sources: "refs/zsync/sources",
     renderImages: true,
     images: "refs/zsync/images",
+    imageNames: "descriptive",
     manifest: "refs/zsync/manifest.json",
     standalone: "items",
     documents: {},
@@ -35,6 +36,7 @@ Zsync.config = (() => {
   };
   const COPY_MODES = ["none", "annotated", "all"];
   const STANDALONE_MODES = ["items", "attachments"];
+  const IMAGE_NAME_MODES = ["descriptive", "key"];
   const DOCUMENT_FIELDS = ["citekey", "title", "date", "author", "recipient", "type"];
 
   function fail(root, msg) {
@@ -58,6 +60,7 @@ Zsync.config = (() => {
     if (typeof cfg.library !== "string" || !/^(user|group:\d+)$/.test(cfg.library)) fail(root, `"library" must be "user" or "group:<groupID>"`);
     if (typeof cfg.recursive !== "boolean") fail(root, `"recursive" must be true or false`);
     if (typeof cfg.renderImages !== "boolean") fail(root, `"renderImages" must be true or false`);
+    if (!IMAGE_NAME_MODES.includes(cfg.imageNames)) fail(root, `"imageNames" must be one of ${IMAGE_NAME_MODES.join(", ")}`);
     if (!COPY_MODES.includes(cfg.copySources)) fail(root, `"copySources" must be one of ${COPY_MODES.join(", ")}`);
     if (!Array.isArray(cfg.bibStripFields) || !cfg.bibStripFields.every((f) => typeof f === "string")) {
       fail(root, `"bibStripFields" must be a list of field names`);
