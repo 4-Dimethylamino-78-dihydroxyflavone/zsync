@@ -28,6 +28,7 @@ Lives in the project root. Only `collection` is required.
   "sources": "refs/zsync/sources",
   "renderImages": true,
   "images": "refs/zsync/images",
+  "imageNames": "descriptive",
   "manifest": "refs/zsync/manifest.json"
 }
 ```
@@ -47,7 +48,8 @@ Lives in the project root. Only `collection` is required.
 | `copySources` | `"annotated"` | copy attachment files into the project: `"none"`, `"annotated"` (only attachments that have annotations) or `"all"` |
 | `sources` | `"refs/zsync/sources"` | where copies go, as `<attachment key>.<ext>` |
 | `renderImages` | `true` | write PNGs for image and ink annotations (rendered by Zotero without opening the reader) |
-| `images` | `"refs/zsync/images"` | where PNGs go, as `<annotation key>.png` |
+| `images` | `"refs/zsync/images"` | where PNGs go |
+| `imageNames` | `"descriptive"` | what the PNGs are called: `"descriptive"` names each after its source, `cao2021_[Unraveling the Structure and Function of]_p3_Fig-1_2JVIG4TD.png` (see [Image names](#image-names)); `"key"` gives the plain `<annotation key>.png` that zsync wrote before 0.5 |
 | `manifest` | `"refs/zsync/manifest.json"` | bookkeeping: hashes, versions and the time of the last export that changed something |
 | `standalone` | `"items"` | files with no parent Zotero item: `"items"` gives each one an item of its own, with inferred metadata and a bib entry (see [Standalone documents](#standalone-documents)); `"attachments"` lists them only under `attachments` |
 | `documents` | `{}` | metadata for standalone documents, keyed by attachment key: `{ "7XK2M4PQ": { "citekey": "notice2026", "type": "letter", "title": "Room Inspection Notice", "date": "2026-09-04", "author": "Village Office", "recipient": "Sam Resident" } }`. Every field is optional; `author` and `recipient` may be lists; a `citekey` may only hold letters, digits, `_` and `-`, with `.` or `:` between them, so that `@citekey` works in Typst |
@@ -287,11 +289,48 @@ for files Zotero cannot annotate.
 | `position` | Zotero's position object, parsed; its shape depends on the reader type |
 | `rects` | PDF only: `[[x1, y1, x2, y2], …]` in PDF user-space points, origin at the bottom left of the unrotated page (MediaBox coordinates, not relative to the CropBox) |
 | `next-page-rects` | PDF only: the part of a highlight that continues on the next page, or `null` |
-| `image` | project-relative PNG path for image and ink annotations (when `renderImages`), else `null` |
+| `image` | project-relative PNG path for image and ink annotations (when `renderImages`), else `null`. Read the path from here rather than writing it out: the file name follows the item (see [Image names](#image-names)) |
 | `author` | the author's name in group libraries, else `null` |
 | `created`, `modified` | UTC, ISO 8601 |
 | `link` | opens Zotero at this annotation |
 | `message` | HTML snapshots of email threads only: the message in the thread that contains the highlight (see below), else `null` |
+
+#### Image names
+
+A folder of PNGs named `2JVIG4TD.png` says nothing about where each picture
+came from, so by default (`"imageNames": "descriptive"`) each is named
+
+```
+<citation key>_[<short title>]_p<page>_<what it shows>_<annotation key>.png
+cao2021_[Unraveling the Structure and Function of]_p3_Fig-1_2JVIG4TD.png
+```
+
+- the **citation key** is the item's key in `items`;
+- the **short title** is Zotero's Short Title when the item has one, else the
+  title without its subtitle, cut between words at 44 characters. A file
+  with no item of its own (`"standalone": "attachments"`) gives its
+  attachment title or file name instead;
+- the **page** is the page label Zotero shows (`p12`, `piv`);
+- **what it shows** is, in this order: the figure your comment names
+  (`see Fig. 4.9b` gives `Fig-4.9b`; `Table`, `Plate`, `Scheme`, `Chart`,
+  `Box` and `Map` work the same way); else the caption on the picture's
+  page, read from the PDF's text (no OCR, so a scanned page has none), when
+  that page has exactly one caption; else the first words of your comment;
+  else `ink` for a drawing; else nothing;
+- the **annotation key** keeps every name unique and is the picture's key
+  in `annotations`.
+
+A page with two or more captions gets no caption in the name, because zsync
+cannot tell which one the picture is: write `Fig 3` in the annotation's
+comment and the next export uses it. Characters a file system refuses
+(`: / \ ? * " < > |`) become spaces.
+
+When a name changes (you retitled the item, its citation key changed, you
+named the figure in the comment, or the project was last exported by a zsync
+that used plain keys), the next export gives the same picture its new name
+and removes the old file, on any device, including one that does not have
+the PDF. The caption found on a page is kept in the manifest, so every
+device gives a picture the same name.
 
 #### `message`: which email in a thread holds the highlight
 
@@ -315,7 +354,9 @@ Zotero could not render, a file it moved aside or could not delete.
 
 Bookkeeping, rewritten only when something in it changes: `outputs`
 (annotations file → SHA-256), `bib` (`path`, `translator`, `sha256`),
-`sources` and `images` (attachment or annotation key → `path`, `sha256`),
+`sources` and `images` (attachment or annotation key → `path`, `sha256`;
+an image also has the annotation's `modified` time and, once its page has
+been read, the `caption` found there or `null`),
 `documents` (what each standalone document was described as, with its
 citation key), `citekeys` (item key → the key zsync gave a regular item that
 had no citation key of its own, or none Typst can cite; see

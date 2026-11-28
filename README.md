@@ -16,7 +16,10 @@ into the project folder:
   the same as in `annotations.json`.
 - `refs/zsync/sources/`: copies of the annotated PDFs and snapshots.
 - `refs/zsync/images/`: PNGs of image and ink annotations, which Zotero
-  renders without you opening the PDF.
+  renders without you opening the PDF, each named after where it came from:
+  `cao2021_[Unraveling the Structure and Function of]_p3_Fig-1_2JVIG4TD.png`
+  is citation key, short title, page, the figure (from your comment, or the
+  caption on that page) and the annotation's key.
 
 A file is only rewritten when its content changes, so exporting twice changes
 nothing and git diffs stay small. Devices without Zotero compile from these
